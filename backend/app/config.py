@@ -147,9 +147,10 @@ class Settings(BaseSettings):
         if self.live_trading:
             raise ValueError(
                 "LIVE_TRADING=true is not supported: real order routing is not "
-                "implemented in this build. Set LIVE_TRADING=false. A broker "
-                "adapter interface exists (app.execution.broker.BrokerAdapter) "
-                "but no live adapter is wired to it."
+                "implemented in this build. Set LIVE_TRADING=false. The "
+                "app.execution package is reserved for a BrokerAdapter interface "
+                "in Phase 6; it is currently empty, so there is nothing for a "
+                "live order to route through."
             )
         if not self.paper_trading:
             raise ValueError(
