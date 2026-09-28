@@ -1,0 +1,29 @@
+# Normalise line endings so a diff shows content changes, not editor churn.
+#
+# Without this, a file written by one tool with LF and edited by another with CRLF
+# shows as entirely rewritten, which buries a five-line change in a 255-line diff
+# and makes review pointless.
+#
+# `text=auto eol=lf` stores LF in the repository and checks out LF everywhere.
+* text=auto eol=lf
+
+# Binary: never touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.db binary
+*.sqlite binary
+*.sqlite3 binary
+*.woff binary
+*.woff2 binary
+
+# Windows scripts need CRLF to run.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# Generated: keep out of diffs and language statistics.
+frontend/package-lock.json -diff linguist-generated
