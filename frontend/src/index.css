@@ -1,0 +1,73 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+
+  body {
+    @apply bg-terminal-950 text-slate-200 antialiased;
+    font-feature-settings: 'cv02', 'cv03', 'cv04';
+  }
+
+  /* Tabular figures everywhere numbers appear, so columns stay aligned. */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-terminal-900;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-terminal-700 rounded-full border-2 border-terminal-900;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-terminal-600;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-lg border border-terminal-750 bg-terminal-900 shadow-card;
+  }
+
+  .card-header {
+    @apply flex items-center justify-between gap-3 border-b border-terminal-750 px-4 py-3;
+  }
+
+  .label {
+    @apply text-2xs font-medium uppercase tracking-wider text-slate-500;
+  }
+
+  .skeleton {
+    @apply animate-shimmer rounded bg-terminal-800;
+    background-image: linear-gradient(
+      90deg,
+      rgba(255, 255, 255, 0) 0%,
+      rgba(255, 255, 255, 0.05) 50%,
+      rgba(255, 255, 255, 0) 100%
+    );
+    background-size: 500px 100%;
+    background-repeat: no-repeat;
+  }
+
+  .th {
+    @apply sticky top-0 z-10 bg-terminal-850 px-3 py-2 text-left text-2xs font-semibold uppercase tracking-wider text-slate-400;
+  }
+
+  .td {
+    @apply border-t border-terminal-800 px-3 py-2 text-sm;
+  }
+}

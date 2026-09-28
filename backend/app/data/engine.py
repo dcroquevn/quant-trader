@@ -1,0 +1,614 @@
+"""The data engine: acquisition, incremental refresh and integrity checks.
+
+This is the layer between vendors and the database. Its contract:
+
+* Bars in the database are **UTC-stamped, validated and de-duplicated**.
+* Re-running a download is **idempotent** -- the same window twice produces the
+  same rows, not duplicates.
+* An **incremental refresh re-fetches a small overlap** rather than starting
+  exactly where it left off, because the most recent bar may have been provisional
+  when it was first stored.
+* **Nothing is ever interpolated.** A gap stays a gap. Fabricated prices are the
+  single most expensive kind of bug in this project, because they produce results
+  that look fine.
+
+Gap detection deserves a note. There is no free, reliable holiday calendar for the
+Bolsa de Santiago, so this engine cannot distinguish "the exchange was closed" from
+"the vendor lost a day". It therefore reports *candidate* gaps -- missing weekdays --
+and leaves interpretation to a human. Claiming to know which is which would be a
+lie dressed as a feature.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+
+import pandas as pd
+from sqlalchemy.orm import Session
+
+from app.config import get_settings
+from app.core.exceptions import (
+    DataError,
+    EmptyDataError,
+    StaleDataError,
+    SymbolNotFoundError,
+)
+from app.core.logging import get_logger
+from app.core.markets import Market, get_market
+from app.core.universe import (
+    BENCHMARKS,
+    DEFAULT_UNIVERSE,
+    AssetSpec,
+    find_asset,
+    universe_for_market,
+)
+from app.data.provider import DataProvider, Timeframe
+from app.data.registry import provider_for_market
+from app.database import repository as repo
+from app.database.models import Asset
+
+logger = get_logger(__name__)
+
+__all__ = ["DownloadResult", "GapReport", "DataEngine"]
+
+
+# Re-fetch this many days on an incremental update. The newest stored bar may
+# have been mid-session and provisional; overlapping re-writes it with the
+# settled values. Three days also covers a weekend.
+INCREMENTAL_OVERLAP_DAYS = 5
+
+STALE_QUOTE_RUN_LIMIT = 3
+"""Trailing carried-forward bars tolerated before a series is refused for signals.
+
+Observed on 2026-09-27: Yahoo served eight consecutive identical zero-volume bars
+for SQM-B.SN and five for CHILE.SN, all dated to the current week. Two in a row can
+be a genuinely quiet instrument; three or more is the vendor filling a hole.
+"""
+
+
+@dataclass(slots=True)
+class DownloadResult:
+    """Outcome of one symbol/timeframe download.
+
+    ``ok=False`` with a populated ``error`` is a normal, expected outcome for
+    free providers, not an exception to swallow. The CLI prints every failure.
+    """
+
+    symbol: str
+    market: str
+    timeframe: str
+    ok: bool
+    provider: str = ""
+    provider_symbol: str = ""
+    bars_written: int = 0
+    bars_skipped: int = 0
+    first_bar: datetime | None = None
+    last_bar: datetime | None = None
+    error: str = ""
+
+    @property
+    def status(self) -> str:
+        if not self.ok:
+            return "FAILED"
+        if self.bars_written == 0:
+            return "UP-TO-DATE"
+        return "OK"
+
+
+@dataclass(slots=True)
+class GapReport:
+    """Candidate gaps in one asset's stored series."""
+
+    symbol: str
+    market: str
+    timeframe: str
+    stored_bars: int
+    first_bar: datetime | None
+    last_bar: datetime | None
+    missing_weekdays: list[date] = field(default_factory=list)
+    duplicate_timestamps: list[datetime] = field(default_factory=list)
+
+    largest_gap_sessions: int = 0
+    """Longest run of consecutive *missing sessions*, ignoring weekends.
+
+    Counted in sessions rather than calendar days on purpose. Five absent
+    weekdays spanning a weekend are three calendar days plus two, which reads as
+    two small gaps when it is really one week-long hole -- and the size of the
+    hole is what decides whether the series is usable.
+    """
+
+    is_stale: bool = False
+    stale_by_days: int = 0
+
+    stale_quote_run: int = 0
+    """Trailing bars that are flat with zero volume -- a carried-forward quote.
+
+    Distinct from ``is_stale``, and the more dangerous of the two. ``is_stale``
+    means the newest bar is old; this means the newest bar is *dated today and is
+    not real*. Yahoo repeats the last traded price for Chilean tickers that have
+    not printed, so the series looks current while carrying no information. A
+    signal generated on such a bar is acting on a quote nobody offered.
+    """
+
+    @property
+    def has_findings(self) -> bool:
+        return bool(
+            self.missing_weekdays
+            or self.duplicate_timestamps
+            or self.is_stale
+            or self.stale_quote_run
+        )
+
+    def summary(self) -> str:
+        if self.stored_bars == 0:
+            return "no data stored"
+        parts = [f"{self.stored_bars} bars"]
+        if self.missing_weekdays:
+            parts.append(
+                f"{len(self.missing_weekdays)} missing weekdays "
+                f"(longest run {self.largest_gap_sessions} sessions)"
+            )
+        if self.duplicate_timestamps:
+            parts.append(f"{len(self.duplicate_timestamps)} duplicate timestamps")
+        if self.is_stale:
+            parts.append(f"stale by {self.stale_by_days}d")
+        if self.stale_quote_run:
+            parts.append(f"{self.stale_quote_run} trailing carried-forward quotes")
+        return "; ".join(parts)
+
+
+class DataEngine:
+    """Download, store and audit market data."""
+
+    def __init__(self, session: Session, *, provider: DataProvider | None = None) -> None:
+        self._session = session
+        self._forced_provider = provider
+        self._settings = get_settings()
+
+    # ------------------------------------------------------------------ #
+    # Universe
+    # ------------------------------------------------------------------ #
+
+    def sync_universe(self, specs: tuple[AssetSpec, ...] | None = None) -> int:
+        """Write markets and asset rows into the database. Idempotent.
+
+        Benchmarks are included: they must be downloadable even though they are
+        never traded.
+        """
+        repo.sync_markets(self._session)
+        source = specs if specs is not None else DEFAULT_UNIVERSE + BENCHMARKS
+
+        seen: set[tuple[str, str]] = set()
+        count = 0
+        for spec in source:
+            key = (spec.symbol, spec.market)
+            if key in seen:
+                continue
+            seen.add(key)
+            repo.upsert_asset(self._session, spec)
+            count += 1
+
+        logger.info("Synced %d assets across markets into the database", count)
+        return count
+
+    def _provider_for(self, market: str) -> DataProvider:
+        return self._forced_provider or provider_for_market(market)
+
+    def resolve(self, spec: AssetSpec, *, force: bool = False) -> tuple[str, str]:
+        """Resolve ``spec`` to a working provider ticker. Returns ``(provider, ticker)``.
+
+        The result is cached on the asset row, so resolution costs one request per
+        instrument for the lifetime of the database rather than one per download.
+        ``force=True`` re-probes, which is what to do when a vendor renames
+        something.
+
+        Raises
+        ------
+        SymbolNotFoundError
+            No candidate resolved. For instruments with no declared candidates at
+            all -- the IPSA index, for example -- this is immediate and explains
+            that the provider simply does not carry it.
+        """
+        provider = self._provider_for(spec.market)
+        row = repo.get_asset(self._session, spec.symbol, spec.market)
+
+        if (
+            not force
+            and row is not None
+            and row.provider == provider.name
+            and row.provider_symbol
+        ):
+            return provider.name, row.provider_symbol
+
+        # An empty mapping, or one that declares nothing for this provider's ticker
+        # namespace, means the provider does not carry the instrument. That is a
+        # definite answer -- the IPSA index, for instance -- so fail immediately
+        # instead of probing the canonical symbol and hoping.
+        namespace = provider.symbol_namespace
+        candidates = spec.provider_symbols.get(namespace, ())
+        if not candidates:
+            raise SymbolNotFoundError(spec.symbol, provider.name, ())
+
+        resolved = provider.resolve_symbol(candidates, spec.symbol)
+
+        if row is None:
+            row = repo.upsert_asset(self._session, spec)
+        row.provider = provider.name
+        row.provider_symbol = resolved
+        row.resolution_checked_at = datetime.now(timezone.utc)
+        self._session.flush()
+        return provider.name, resolved
+
+    # ------------------------------------------------------------------ #
+    # Download
+    # ------------------------------------------------------------------ #
+
+    def download_symbol(
+        self,
+        spec: AssetSpec,
+        timeframe: "str | Timeframe" = Timeframe.D1,
+        *,
+        start: date | datetime | None = None,
+        end: date | datetime | None = None,
+        incremental: bool = True,
+    ) -> DownloadResult:
+        """Download and store bars for one instrument.
+
+        With ``incremental=True`` and bars already stored, the fetch starts
+        ``INCREMENTAL_OVERLAP_DAYS`` before the newest stored bar and ``start`` is
+        ignored. Pass ``incremental=False`` to force a full re-download.
+
+        Never raises for data problems -- every failure is returned as a
+        ``DownloadResult`` with ``ok=False``. A universe download of 30 symbols
+        should not abort because one vendor ticker went missing.
+        """
+        tf = Timeframe.parse(timeframe)
+        result = DownloadResult(
+            symbol=spec.symbol, market=spec.market, timeframe=tf.value, ok=False
+        )
+
+        try:
+            provider_name, provider_symbol = self.resolve(spec)
+        except DataError as exc:
+            result.error = str(exc)
+            return result
+
+        result.provider = provider_name
+        result.provider_symbol = provider_symbol
+
+        row = repo.get_asset(self._session, spec.symbol, spec.market)
+        if row is None:
+            row = repo.upsert_asset(self._session, spec)
+
+        fetch_start = start
+        if incremental:
+            latest = repo.latest_bar_date(self._session, row.id, tf.value)
+            if latest is not None:
+                fetch_start = latest - timedelta(days=INCREMENTAL_OVERLAP_DAYS)
+                logger.debug(
+                    "%s: incremental refresh from %s (newest stored %s)",
+                    spec.symbol,
+                    fetch_start.date(),
+                    latest.date(),
+                )
+
+        provider = self._provider_for(spec.market)
+        try:
+            frame = provider.fetch_bars(
+                provider_symbol,
+                tf,
+                start=fetch_start,
+                end=end,
+                canonical_symbol=spec.symbol,
+            )
+        except EmptyDataError as exc:
+            # Nothing new is the normal outcome of refreshing an up-to-date symbol.
+            if incremental and repo.bar_count(self._session, row.id, tf.value) > 0:
+                result.ok = True
+                result.error = ""
+                logger.debug("%s: nothing new (%s)", spec.symbol, exc)
+                return result
+            result.error = str(exc)
+            return result
+        except DataError as exc:
+            result.error = str(exc)
+            return result
+        except Exception as exc:  # noqa: BLE001 -- one bad symbol must not stop the run
+            result.error = f"{type(exc).__name__}: {exc}"
+            logger.warning("Unexpected failure downloading %s: %s", spec.symbol, exc)
+            return result
+
+        written, skipped = repo.upsert_bars(
+            self._session,
+            row.id,
+            tf.value,
+            frame,
+            source=provider_name,
+            is_adjusted="adj_close" in frame.columns and frame["adj_close"].notna().any(),
+        )
+
+        result.ok = True
+        result.bars_written = written
+        result.bars_skipped = skipped
+        result.first_bar = repo.earliest_bar_date(self._session, row.id, tf.value)
+        result.last_bar = repo.latest_bar_date(self._session, row.id, tf.value)
+
+        if skipped:
+            logger.warning(
+                "%s: dropped %d invalid bars (not repaired -- see repository.upsert_bars)",
+                spec.symbol,
+                skipped,
+            )
+        return result
+
+    def download_universe(
+        self,
+        market: str | None = None,
+        timeframe: "str | Timeframe" = Timeframe.D1,
+        *,
+        start: date | datetime | None = None,
+        end: date | datetime | None = None,
+        incremental: bool = True,
+        include_benchmarks: bool = True,
+        symbols: list[str] | None = None,
+    ) -> list[DownloadResult]:
+        """Download many instruments, continuing past individual failures.
+
+        Each symbol is committed as soon as it lands. A full-universe download over
+        a free provider takes minutes and can be interrupted -- by a rate limit, a
+        dropped connection, or Ctrl-C. Committing once at the end would throw away
+        every symbol already fetched, which then has to be re-downloaded from a
+        vendor that is rate-limiting precisely because of the retry.
+        """
+        specs = self._select_specs(market, symbols, include_benchmarks)
+        results: list[DownloadResult] = []
+
+        for index, spec in enumerate(specs, start=1):
+            logger.info(
+                "[%d/%d] %s (%s)", index, len(specs), spec.symbol, spec.market
+            )
+            result = self.download_symbol(
+                spec, timeframe, start=start, end=end, incremental=incremental
+            )
+            results.append(result)
+
+            try:
+                self._session.commit()
+            except Exception:
+                # A commit failure is about this symbol's rows, not the batch.
+                # Roll back so the session stays usable for the remaining symbols.
+                self._session.rollback()
+                result.ok = False
+                result.error = "commit failed; rows for this symbol were discarded"
+                logger.exception("Commit failed after %s; continuing", spec.symbol)
+
+            if not result.ok:
+                logger.warning("  -> FAILED: %s", result.error)
+            else:
+                logger.info("  -> %s (%d bars written)", result.status, result.bars_written)
+
+        ok = sum(1 for r in results if r.ok)
+        logger.info("Download finished: %d/%d succeeded", ok, len(results))
+        return results
+
+    def _select_specs(
+        self,
+        market: str | None,
+        symbols: list[str] | None,
+        include_benchmarks: bool,
+    ) -> list[AssetSpec]:
+        if symbols:
+            return [find_asset(s, market) for s in symbols]
+
+        if market is None:
+            specs = list(DEFAULT_UNIVERSE)
+            if include_benchmarks:
+                specs += [b for b in BENCHMARKS if b.provider_symbols]
+        else:
+            code = get_market(market).code
+            specs = list(universe_for_market(code))
+            if include_benchmarks:
+                from app.core.universe import benchmark_for_market
+
+                bench = benchmark_for_market(code)
+                if bench.available and bench.symbol:
+                    try:
+                        spec = find_asset(bench.symbol)
+                    except KeyError:
+                        spec = None
+                    if spec is not None and not any(
+                        s.symbol == spec.symbol and s.market == spec.market for s in specs
+                    ):
+                        specs.append(spec)
+
+        # Drop instruments no provider can serve (the IPSA index), so a universe
+        # download does not report a failure for something known to be absent.
+        return [s for s in specs if s.provider_symbols]
+
+    # ------------------------------------------------------------------ #
+    # Integrity
+    # ------------------------------------------------------------------ #
+
+    def audit_symbol(
+        self,
+        spec: AssetSpec,
+        timeframe: "str | Timeframe" = Timeframe.D1,
+        *,
+        as_of: datetime | None = None,
+    ) -> GapReport:
+        """Audit one stored series for gaps, duplicates and staleness."""
+        tf = Timeframe.parse(timeframe)
+        row = repo.get_asset(self._session, spec.symbol, spec.market)
+        report = GapReport(
+            symbol=spec.symbol,
+            market=spec.market,
+            timeframe=tf.value,
+            stored_bars=0,
+            first_bar=None,
+            last_bar=None,
+        )
+        if row is None:
+            return report
+
+        frame = repo.load_bars(self._session, row.id, tf.value, use_adjusted=False)
+        report.stored_bars = len(frame)
+        if frame.empty:
+            return report
+
+        report.first_bar = frame.index[0].to_pydatetime()
+        report.last_bar = frame.index[-1].to_pydatetime()
+
+        # load_bars de-duplicates by construction; a duplicate here would mean the
+        # unique constraint was bypassed, which is worth screaming about.
+        dupes = frame.index[frame.index.duplicated()]
+        report.duplicate_timestamps = [ts.to_pydatetime() for ts in dupes]
+
+        if tf is Timeframe.D1:
+            market = get_market(spec.market)
+            present = set(frame.index.normalize().date)
+            expected = pd.date_range(
+                frame.index[0].normalize(), frame.index[-1].normalize(), freq="D"
+            )
+            missing = [
+                d.date()
+                for d in expected
+                if market.is_trading_day(d.date()) and d.date() not in present
+            ]
+            report.missing_weekdays = missing
+            report.largest_gap_sessions = _largest_session_run(missing, market)
+
+        report.stale_quote_run = _trailing_stale_quote_run(frame)
+
+        reference = as_of or datetime.now(timezone.utc)
+        age_days = (reference - report.last_bar).days
+        tolerance = self._settings.stale_data_max_age_days
+        if age_days > tolerance:
+            report.is_stale = True
+            report.stale_by_days = age_days - tolerance
+
+        return report
+
+    def audit_universe(
+        self,
+        market: str | None = None,
+        timeframe: "str | Timeframe" = Timeframe.D1,
+    ) -> list[GapReport]:
+        specs = self._select_specs(market, None, include_benchmarks=True)
+        return [self.audit_symbol(spec, timeframe) for spec in specs]
+
+    def assert_fresh(
+        self,
+        spec: AssetSpec,
+        timeframe: "str | Timeframe" = Timeframe.D1,
+        *,
+        as_of: datetime | None = None,
+    ) -> None:
+        """Raise ``StaleDataError`` if the newest bar is older than tolerated.
+
+        Called before generating live signals. Acting on a stale series is how a
+        paper bot ends up trading last week's setup at today's price.
+        """
+        report = self.audit_symbol(spec, timeframe, as_of=as_of)
+        if report.stored_bars == 0:
+            raise StaleDataError(
+                f"No stored bars for {spec.symbol} ({spec.market}, {report.timeframe}); "
+                "run a download before generating signals."
+            )
+        if report.is_stale:
+            raise StaleDataError(
+                f"{spec.symbol} ({spec.market}) newest bar is {report.last_bar:%Y-%m-%d}, "
+                f"{report.stale_by_days} day(s) beyond the "
+                f"{self._settings.stale_data_max_age_days}-day tolerance."
+            )
+        if report.stale_quote_run >= STALE_QUOTE_RUN_LIMIT:
+            raise StaleDataError(
+                f"{spec.symbol} ({spec.market}) has {report.stale_quote_run} trailing "
+                f"bars that are flat with zero volume, ending {report.last_bar:%Y-%m-%d}. "
+                "The vendor is carrying forward the last traded price: the series is "
+                "dated today but contains no recent trading. Refusing to generate a "
+                "signal from a quote nobody offered."
+            )
+
+    def coverage(self, timeframe: "str | Timeframe" = Timeframe.D1) -> pd.DataFrame:
+        """Per-asset coverage table: what is actually stored right now."""
+        return repo.coverage_report(self._session, Timeframe.parse(timeframe).value)
+
+    def load(
+        self,
+        symbol: str,
+        market: str | None = None,
+        timeframe: "str | Timeframe" = Timeframe.D1,
+        *,
+        start: date | datetime | None = None,
+        end: date | datetime | None = None,
+        use_adjusted: bool = True,
+    ) -> pd.DataFrame:
+        """Load a stored series by canonical symbol."""
+        spec = find_asset(symbol, market)
+        row = repo.get_asset(self._session, spec.symbol, spec.market)
+        if row is None:
+            return repo.load_bars(self._session, -1, Timeframe.parse(timeframe).value)
+        return repo.load_bars(
+            self._session,
+            row.id,
+            Timeframe.parse(timeframe).value,
+            start=start,
+            end=end,
+            use_adjusted=use_adjusted,
+        )
+
+
+def _trailing_stale_quote_run(frame: pd.DataFrame) -> int:
+    """Count trailing bars that are flat (O=H=L=C) with zero volume.
+
+    Walks backwards from the newest bar and stops at the first bar that shows any
+    intraday range or any volume. Counting only the *trailing* run matters: an
+    isolated dead session in the middle of a history is a fact about that day,
+    while a run at the end means the newest data is not real and anything acting on
+    it is acting on nothing.
+    """
+    if frame.empty:
+        return 0
+
+    required = {"open", "high", "low", "close"}
+    if not required <= set(frame.columns):
+        return 0
+
+    volume = frame["volume"] if "volume" in frame.columns else None
+    run = 0
+    for i in range(len(frame) - 1, -1, -1):
+        row = frame.iloc[i]
+        flat = row["open"] == row["high"] == row["low"] == row["close"]
+        dead = True if volume is None else (float(volume.iloc[i] or 0.0) <= 0.0)
+        if flat and dead:
+            run += 1
+        else:
+            break
+    return run
+
+
+def _largest_session_run(days: list[date], market: Market) -> int:
+    """Longest run of consecutive missing *sessions*, treating weekends as contiguous.
+
+    Two missing days count as consecutive sessions when every calendar day
+    strictly between them is a non-trading day. So Thursday through the following
+    Wednesday, with the weekend in between, is one run of five -- which is what a
+    human reading the report needs to know.
+    """
+    if not days:
+        return 0
+
+    ordered = sorted(days)
+    longest = current = 1
+    for previous, nxt in zip(ordered, ordered[1:]):
+        gap = [
+            previous + timedelta(days=offset)
+            for offset in range(1, (nxt - previous).days)
+        ]
+        if all(not market.is_trading_day(day) for day in gap):
+            current += 1
+            longest = max(longest, current)
+        else:
+            current = 1
+    return longest
