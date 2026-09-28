@@ -31,7 +31,7 @@ from app.core.universe import (
     VERIFICATION_DATE,
     find_asset,
 )
-from app.data.engine import DataEngine
+from app.data.engine import STALE_QUOTE_RUN_LIMIT, DataEngine
 from app.data.provider import Timeframe
 from app.data.registry import provider_cost_table
 from app.database.base import init_database, session_scope
@@ -239,12 +239,27 @@ def asset_features(
     tf = Timeframe.parse(timeframe)
 
     with session_scope() as session:
-        frame = DataEngine(session).load(spec.symbol, spec.market, tf)
+        # Features are computed on real prints only. A carried-forward tail would
+        # otherwise feed invented prices into every rolling indicator, and the
+        # "as of" date would claim the readings describe today.
+        frame = DataEngine(session).load(
+            spec.symbol, spec.market, tf, trim_carried_forward=True
+        )
+
+    dropped = int(frame.attrs.get("carried_forward_dropped", 0))
 
     if frame.empty:
         raise HTTPException(
             status_code=404,
-            detail=f"No stored bars for {spec.symbol} ({spec.market}, {tf.value}).",
+            detail=(
+                f"No usable bars for {spec.symbol} ({spec.market}, {tf.value})."
+                + (
+                    f" All {dropped} stored bars are flat with zero volume: the vendor "
+                    "carried a price forward and none of it is a real print."
+                    if dropped
+                    else ""
+                )
+            ),
         )
 
     computed = compute_features(frame)
@@ -264,6 +279,7 @@ def asset_features(
         "timeframe": tf.value,
         "as_of": computed.index[-1].isoformat(),
         "bars_available": len(frame),
+        "carried_forward_dropped": dropped,
         "complete": complete,
         "note": note,
         "features": values,
@@ -309,6 +325,7 @@ def asset_audit(
         "is_stale": report.is_stale,
         "stale_by_days": report.stale_by_days,
         "stale_quote_run": report.stale_quote_run,
+        "stale_quote_run_threshold": STALE_QUOTE_RUN_LIMIT,
         "summary": report.summary(),
         "caveat": (
             "Missing weekdays may be exchange holidays. No free holiday calendar is "

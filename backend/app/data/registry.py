@@ -12,6 +12,7 @@ from collections.abc import Callable
 
 from app.config import get_settings
 from app.core.markets import get_market
+from app.data.bcentral_provider import BancoCentralProvider
 from app.data.chile_provider import ChileDataProvider
 from app.data.provider import DataProvider
 from app.data.yfinance_provider import YFinanceProvider
@@ -29,6 +30,10 @@ ProviderFactory = Callable[[], DataProvider]
 _FACTORIES: dict[str, ProviderFactory] = {
     "yfinance": YFinanceProvider,
     "chile-yfinance": ChileDataProvider,
+    # Registered unconditionally so `providers` can report that it exists and what
+    # it needs. Without credentials every request raises MissingCredentialsError,
+    # which the universe download treats as a skip rather than a failure.
+    "bcentral": BancoCentralProvider,
 }
 
 _INSTANCES: dict[str, DataProvider] = {}

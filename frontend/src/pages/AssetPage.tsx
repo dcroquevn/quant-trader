@@ -129,7 +129,8 @@ export default function AssetPage() {
       </div>
 
       {/* Data-quality warnings come first, above the numbers they qualify. */}
-      {audit.data && audit.data.stale_quote_run >= 3 && (
+      {audit.data &&
+        audit.data.stale_quote_run >= audit.data.stale_quote_run_threshold && (
         <Caveat>
           <strong>
             The last {audit.data.stale_quote_run} bars are flat with zero volume.

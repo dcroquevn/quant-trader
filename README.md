@@ -12,6 +12,10 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 
 **Status: Phase 1 of 8 complete** — data foundation, database and indicators.
 
+Free Chilean data sources were surveyed separately; see
+[docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
+what turned out not to.
+
 ---
 
 ## Table of contents
@@ -38,7 +42,7 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 | 40 technical indicators, all verified free of look-ahead bias | Done |
 | CLI for data operations | Done |
 | REST API + dark-mode dashboard showing stored data and indicators | Done |
-| 278 tests, including look-ahead and leakage detection | Done |
+| 328 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Strategy engine, scanner, backtester | Phase 2 |
 | Optimisation, train/validation/test, walk-forward | Phase 4 |
 | Historical analogues and statistical scenarios | Phase 5 |
@@ -160,11 +164,13 @@ quant-trader/
 │   │   │   projections|portfolio|execution|risk/     (Phase 2+)
 │   │   ├── api/main.py         FastAPI endpoints
 │   │   └── __main__.py         CLI
-│   └── tests/                  278 tests
+│   └── tests/                  328 tests
 ├── frontend/                   React + TypeScript + Vite + Tailwind + Recharts
 ├── data/                       SQLite database (gitignored)
 ├── reports/                    Generated reports (gitignored)
-└── docs/                       Symbol verification records
+├── docs/
+│   ├── symbol_verification.md   What was probed, and what resolved
+│   └── chilean_data_sources.md  Free-source survey: what exists, what does not
 ```
 
 ### Design decisions worth knowing
@@ -200,6 +206,7 @@ anything other than `train`.
 | Dependency | Licence | Cost | Notes |
 |---|---|---|---|
 | yfinance | Apache-2.0 | **Free** | No API key. Unofficial Yahoo endpoints, no SLA |
+| Banco Central de Chile API BDE | n/a (public service) | **Free** | Optional. Free registration required. Carries the IPSA. Attribution required |
 | pandas / numpy | BSD-3 | **Free** | |
 | SQLAlchemy | MIT | **Free** | SQLite stdlib driver; PostgreSQL-ready |
 | pydantic / pydantic-settings | MIT | **Free** | |
@@ -230,26 +237,58 @@ bankrupt or were acquired are absent, so any backtest over this universe is meas
 only on survivors and is **optimistic by an unknown amount**. Free data cannot fix
 this. It is recorded on every backtest row and printed in every report.
 
-### 2. The IPSA benchmark does not exist here (high)
+### 2. The IPSA needs a free Banco Central account (medium)
 
-The Chilean index is a licensed S&P Dow Jones product. Six Yahoo spellings were
-probed on 2026-09-27 (`^IPSA`, `IPSA.SN`, `^SPIPSA`, `^SPCLXIPSA`, `^CLX`, `IPSA`)
-and **all returned zero rows**. `ECH`, a USD-denominated NYSE-listed ETF, is used as
-a proxy — so a CLP strategy compared against it is partly being measured on currency
-moves it never made. The code refuses to call ECH "IPSA", and a test enforces that.
+Yahoo serves nothing for the Chilean index: six spellings were probed on 2026-09-27
+(`^IPSA`, `IPSA.SN`, `^SPIPSA`, `^SPCLXIPSA`, `^CLX`, `IPSA`) and **all returned zero
+rows**.
 
-### 3. Yahoo carries forward stale quotes for Chilean tickers (high)
+The **Banco Central de Chile API BDE** does carry it, free of charge, after a free
+registration (email + password — no card, no tier). Set `BCCH_USER` and
+`BCCH_PASSWORD` in `.env`; see [docs/chilean_data_sources.md](docs/chilean_data_sources.md).
 
-**Measured on the downloaded data, 2026-09-27: all 18 Chilean instruments ended in
-flat zero-volume bars** — 5 bars for most names, **49 for SQM-B and ANDINA-B**
-(roughly ten weeks). The vendor repeats the last traded price for instruments that
-have not printed, so the series looks current while containing no trading. All 15 US
-instruments were clean.
+Until you do, the Chilean benchmark falls back to **`ECH`**, a USD-denominated
+NYSE-listed ETF — so a CLP strategy compared against it is partly being measured on
+currency moves it never made. The code refuses to call ECH "IPSA", and a test
+enforces that.
+
+### 3. Yahoo's Chilean feed stalled at Fiestas Patrias (high)
+
+**Measured on the downloaded data, 2026-09-27: all 18 Chilean instruments end in flat
+zero-volume bars.** All 15 US instruments are clean.
+
+| Instrument | Last real print | Fabricated bars after it |
+|---|---|---|
+| SQM-B | 2026-07-17 | 49 |
+| ANDINA-B | 2026-07-15 | 49 |
+| The other 16 | **2026-09-17** | **5** |
+
+Sixteen instruments stopping on the same date is not sixteen coincidences. Thursday
+2026-09-17 was the last real session; Friday the 18th was Fiestas Patrias with the
+market closed; Monday 21 through Friday 25 were five sessions that *did* trade and for
+which Yahoo returned the 17th's close with zero volume. The feed stalled at the
+holiday and did not resume.
 
 This is more dangerous than ordinary stale data, because the bars are *dated today*
-and pass any freshness check based on timestamps. `DataEngine.assert_fresh()`
-therefore also refuses a series whose tail is carried forward, and the dashboard
-warns above the numbers rather than below them.
+and pass any freshness check based on timestamps. The handling is three-part:
+
+1. **Detect** the trailing run of flat zero-volume bars.
+2. **Trim** it before computing anything, so no indicator ever sees an invented price.
+   Feature extraction does this by default and reports how many bars it removed.
+3. **Judge freshness on the last real print.** `assert_fresh()` strips the invented
+   tail and applies the age tolerance to what remains — stricter than a blanket ban
+   for a name that is genuinely dead, and more permissive for one that just had a
+   quiet couple of sessions.
+
+**Current effect: all 18 Chilean instruments are blocked for live signal generation**,
+because their last real print is ten days old. That is the correct answer, not a bug.
+Historical backtesting over 2016–2026 is unaffected — the ~2,500 real bars per
+instrument remain.
+
+Trimming visibly repaired the feature set. Before, on SQM-B: `volume_sma_20 = 0`,
+`relative_volume_20 = NaN`, `bb_width = 0.0041`, feature set incomplete. After:
+`335,986`, `3.77`, `11.71`, complete. Every one of those defects traced back to the
+fabricated tail.
 
 ### 4. Transaction costs are placeholders (high)
 
@@ -291,8 +330,8 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 276 offline tests
-python -m pytest -m network               # 2 live provider tests
+python -m pytest                          # 328 tests (325 offline, 3 live)
+python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
 ```
 

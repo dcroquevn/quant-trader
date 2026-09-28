@@ -83,6 +83,12 @@ class Settings(BaseSettings):
     alpaca_secret_key: str = ""
     alpaca_base_url: str = "https://paper-api.alpaca.markets"
 
+    # ---- Banco Central de Chile, API BDE (optional, free registration) ----
+    # The only free source found that carries the IPSA. Blank means the Chilean
+    # benchmark stays on the ECH proxy; nothing else changes.
+    bcch_user: str = ""
+    bcch_password: str = ""
+
     # ---- Telegram (optional) ---------------------------------------------
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

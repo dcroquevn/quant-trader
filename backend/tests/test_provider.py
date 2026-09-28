@@ -318,11 +318,38 @@ class TestRegistry:
         register_provider("fake-test-only", FakeProvider, replace=True)
         assert get_provider("fake-test-only").name == "fake"
 
-    def test_cost_table_states_every_provider_is_free(self) -> None:
-        """The zero-cost rule, made auditable."""
+    def test_no_provider_costs_money(self) -> None:
+        """The zero-cost rule, made auditable.
+
+        This is about money, not credentials. A provider that is free but needs a
+        free registration still satisfies the rule -- what it must not do is become
+        a required dependency, which the next test covers.
+        """
         for row in provider_cost_table():
-            assert "free" in row["cost"].lower(), row
-            assert row["api_key_required"] == "no", row
+            cost = row["cost"].lower()
+            assert "free" in cost, row
+            for forbidden in ("usd", "eur", "$", "/month", "per month", "subscription"):
+                assert forbidden not in cost, f"{row['provider']} looks paid: {row['cost']}"
+
+    def test_credentialled_providers_are_never_a_market_default(self) -> None:
+        """The system must work end to end with a completely empty .env.
+
+        A provider that needs credentials may be registered and offered, but it can
+        never be what a market resolves to by default -- otherwise a fresh checkout
+        cannot download anything until the user signs up for something.
+        """
+        for market in ("USA", "CHILE"):
+            provider = provider_for_market(market)
+            assert not provider.capabilities.requires_api_key, (
+                f"{market} defaults to {provider.name!r}, which requires credentials"
+            )
+
+    def test_credentialled_providers_declare_registration_is_free(self) -> None:
+        """If a provider needs an account, its cost string must say the account is free."""
+        for row in provider_cost_table():
+            if row["api_key_required"] == "yes":
+                assert "registration" in row["cost"].lower(), row
+                assert "free" in row["cost"].lower(), row
 
     def test_cost_table_lists_markets_and_timeframes(self) -> None:
         rows = {row["provider"]: row for row in provider_cost_table()}

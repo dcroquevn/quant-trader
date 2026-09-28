@@ -16,6 +16,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from app.config import ensure_directories, get_settings
+from app.core.exceptions import InsufficientDataError
 from app.core.logging import get_logger, setup_logging
 from app.core.markets import MARKETS, all_market_codes
 from app.core.universe import (
@@ -28,7 +29,7 @@ from app.core.universe import (
 )
 from app.data.engine import DataEngine
 from app.data.provider import Timeframe
-from app.data.registry import provider_cost_table
+from app.data.registry import provider_cost_table, provider_for_market
 from app.database.base import init_database, session_scope
 from app.indicators.registry import compute_features, latest_features
 
@@ -122,9 +123,25 @@ def providers() -> None:
             row["cost"],
         )
     console.print(table)
+
+    rows = provider_cost_table()
+    needs_account = [r["provider"] for r in rows if r["api_key_required"] == "yes"]
+    defaults = {code: provider_for_market(code).name for code in all_market_codes()}
+
     console.print(
-        "[dim]Every provider above is free and needs no account. "
-        "No paid data source is wired into this project.[/dim]"
+        "[dim]No paid data source is wired into this project: every provider above "
+        "costs nothing.[/dim]"
+    )
+    if needs_account:
+        console.print(
+            f"[dim]Needs a free account: {', '.join(needs_account)}. "
+            "Registration costs nothing, but it is a signup -- so none of these is a "
+            "default for any market, and the system works with an empty .env.[/dim]"
+        )
+    console.print(
+        "[dim]Defaults: "
+        + "  ".join(f"{code}={name}" for code, name in sorted(defaults.items()))
+        + "[/dim]"
     )
 
 
@@ -374,22 +391,31 @@ def features(
     spec = find_asset(symbol, market)
 
     with session_scope() as session:
-        frame = DataEngine(session).load(spec.symbol, spec.market, tf)
+        frame = DataEngine(session).load(
+            spec.symbol, spec.market, tf, trim_carried_forward=True
+        )
+
+    dropped = int(frame.attrs.get("carried_forward_dropped", 0))
 
     if frame.empty:
         console.print(
-            f"[red]No stored bars for {spec.symbol}.[/red] "
-            f"Run `python -m app download-data --symbols {spec.symbol}` first."
+            f"[red]No usable bars for {spec.symbol}.[/red] "
+            + (
+                f"All {dropped} stored bars are flat with zero volume -- the vendor "
+                "carried a price forward and none of it is a real print."
+                if dropped
+                else f"Run `python -m app download-data --symbols {spec.symbol}` first."
+            )
         )
         raise typer.Exit(code=1)
 
     computed = compute_features(frame)
     try:
         values = latest_features(computed, require_complete=True)
-        complete = True
-    except Exception:
+        complete, note = True, ""
+    except InsufficientDataError as exc:
         values = latest_features(computed, require_complete=False)
-        complete = False
+        complete, note = False, str(exc)
 
     as_of = computed.index[-1]
     console.print(
@@ -399,11 +425,15 @@ def features(
             expand=False,
         )
     )
-    if not complete:
+    if dropped:
         console.print(
-            f"[yellow]Feature set incomplete: {len(frame)} bars is fewer than the 252 "
-            "needed for every indicator to warm up. Missing values show as '-'.[/yellow]"
+            f"[yellow]Dropped {dropped} trailing bar(s) that were flat with zero "
+            f"volume.[/yellow] The vendor carried the last price forward, so the "
+            f"stored series ran past its last real print. Values below are as of "
+            f"{as_of:%Y-%m-%d}, the last session that actually traded."
         )
+    if not complete:
+        console.print(f"[yellow]{note}[/yellow]")
 
     table = Table(header_style="bold cyan")
     table.add_column("feature")

@@ -153,6 +153,8 @@ export interface FeaturesResponse {
   timeframe: string;
   as_of: string;
   bars_available: number;
+  /** Trailing fabricated bars removed before computing. as_of reflects the trim. */
+  carried_forward_dropped: number;
   complete: boolean;
   note: string;
   features: FeatureMap;
@@ -174,6 +176,8 @@ export interface AuditResponse {
   stale_by_days: number;
   /** Trailing bars the vendor carried forward: flat OHLC with zero volume. */
   stale_quote_run: number;
+  /** Count at or above which the backend considers the tail worth flagging. */
+  stale_quote_run_threshold: number;
   summary: string;
   caveat: string;
 }
