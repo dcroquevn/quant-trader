@@ -76,6 +76,8 @@ notebooks/*.ipynb
 node_modules/
 frontend/dist/
 frontend/.vite/
+frontend/tsconfig.tsbuildinfo
+frontend/*.tsbuildinfo
 frontend/coverage/
 npm-debug.log*
 yarn-debug.log*
