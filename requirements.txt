@@ -39,6 +39,7 @@ Jinja2>=3.1,<4.0            # BSD-3-Clause  -- free
 # ---- Testing ----
 pytest>=8.0,<9.0            # MIT           -- free
 pytest-cov>=4.1,<7.0        # MIT           -- free
+httpx2>=2.13,<3.0           # BSD-3-Clause  -- free; required by starlette's TestClient
 
 # =============================================================================
 # DELIBERATELY NOT INCLUDED

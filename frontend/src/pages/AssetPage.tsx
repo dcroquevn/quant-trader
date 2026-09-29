@@ -1,65 +1,29 @@
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft } from 'lucide-react';
+import clsx from 'clsx';
+import { ArrowDown, ArrowLeft, ArrowUp, Minus } from 'lucide-react';
 import { useMemo } from 'react';
-import {
-  Bar,
-  BarChart,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ReferenceLine,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from 'recharts';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
+import { SignedBarChart, TimeSeriesChart } from '../components/charts';
 import { Badge, Card, Caveat, ErrorState, Loading, Stat } from '../components/ui';
-import { api } from '../lib/api';
-import type { FeatureHistoryRow } from '../lib/api';
-import { compact, date, marketFlag, num, pct, price, signClass } from '../lib/format';
+import { api, type FeatureHistoryRow, type ScanRow } from '../lib/api';
+import { DASH, compact, date, marketFlag, num, pct, price, signClass } from '../lib/format';
 
 const HISTORY_BARS = 320;
 
-const GRID = '#1a2030';
-const AXIS = '#465575';
-
-/** Recharts tooltip, styled to match the terminal palette. */
-function ChartTooltip({
-  active,
-  payload,
-  label,
-  currency,
-}: {
-  active?: boolean;
-  payload?: Array<{ name?: string; value?: number | string; color?: string }>;
-  label?: string | number;
-  currency?: string;
-}) {
-  if (!active || !payload?.length) return null;
-  return (
-    <div className="rounded border border-terminal-700 bg-terminal-950/95 px-2.5 py-2 text-2xs shadow-lg">
-      <div className="mb-1 font-mono text-slate-400">{date(String(label))}</div>
-      {payload.map((entry) => (
-        <div key={entry.name} className="flex items-center justify-between gap-3">
-          <span className="flex items-center gap-1.5" style={{ color: entry.color }}>
-            <span className="h-1.5 w-1.5 rounded-full" style={{ background: entry.color }} />
-            {entry.name}
-          </span>
-          <span className="font-mono tnum text-slate-200">
-            {typeof entry.value === 'number'
-              ? currency
-                ? price(entry.value, currency)
-                : num(entry.value)
-              : String(entry.value ?? '')}
-          </span>
-        </div>
-      ))}
-    </div>
-  );
-}
-
+/**
+ * Asset page.
+ *
+ * Built on the shared chart primitives so the palette, tooltips and table views behave
+ * the same as everywhere else. Two page-specific concerns:
+ *
+ * **Data-quality warnings sit above the charts, not beneath them.** A carried-forward
+ * tail makes a price series look current, and a reader who sees the chart before the
+ * caveat has already drawn a conclusion.
+ *
+ * **The verdict is shown with its components**, so "HOLD" is legible as "five of seven
+ * conditions hold, and here are the two that do not" rather than as an opaque outcome.
+ */
 export default function AssetPage() {
   const { symbol = '' } = useParams();
   const [params] = useSearchParams();
@@ -73,13 +37,19 @@ export default function AssetPage() {
     queryKey: ['audit', symbol, market],
     queryFn: () => api.audit(symbol, market),
   });
+  const scan = useQuery({
+    queryKey: ['scan', 'single', symbol, market],
+    queryFn: () => api.scan({ market, limit: 500 }),
+    staleTime: 5 * 60 * 1000,
+  });
 
   const currency = features.data?.currency ?? 'USD';
+  const verdict: ScanRow | undefined = scan.data?.rows.find((r) => r.symbol === symbol);
 
   const series = useMemo(() => {
     const rows: FeatureHistoryRow[] = features.data?.history ?? [];
     return rows.map((row) => ({
-      ts: String(row.ts),
+      ts: String(row.ts).slice(0, 10),
       close: row.close as number | null,
       ema20: row.ema_20 as number | null,
       ema50: row.ema_50 as number | null,
@@ -89,6 +59,7 @@ export default function AssetPage() {
       macd: row.macd as number | null,
       macdSignal: row.macd_signal as number | null,
       macdHist: row.macd_hist as number | null,
+      return1d: row.return_1d as number | null,
     }));
   }, [features.data]);
 
@@ -103,12 +74,13 @@ export default function AssetPage() {
 
   const f = features.data?.features ?? {};
   const asNum = (key: string) => (typeof f[key] === 'number' ? (f[key] as number) : null);
+  const dropped = features.data?.carried_forward_dropped ?? 0;
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <BackLink />
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
+      <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-lg font-semibold text-slate-100">
             <span aria-hidden>{marketFlag(features.data?.market ?? '')}</span>
@@ -118,25 +90,38 @@ export default function AssetPage() {
           <p className="mt-0.5 text-xs text-slate-500">
             {features.data ? (
               <>
-                as of {date(features.data.as_of)} · {compact(features.data.bars_available)} bars stored
+                as of {date(features.data.as_of)} · {compact(features.data.bars_available)} real bars
               </>
             ) : (
               'loading'
             )}
           </p>
         </div>
-        {features.data && !features.data.complete && <Badge tone="caution">incomplete features</Badge>}
-      </div>
+        {verdict && <VerdictBadge row={verdict} />}
+      </header>
 
-      {/* Data-quality warnings come first, above the numbers they qualify. */}
-      {audit.data &&
-        audit.data.stale_quote_run >= audit.data.stale_quote_run_threshold && (
+      {/* Warnings first: a chart seen before its caveat has already been believed. */}
+      {dropped > 0 && (
+        <Caveat>
+          <strong>{dropped} trailing bars were removed before computing anything.</strong> They
+          were flat with zero volume — the vendor carrying the last traded price forward — so the
+          stored series ran past its last real print. Everything below is as of{' '}
+          {date(features.data?.as_of)}, the last session that actually traded.
+        </Caveat>
+      )}
+      {audit.data && audit.data.volume_feed_degraded && (
         <Caveat>
           <strong>
-            The last {audit.data.stale_quote_run} bars are flat with zero volume.
+            {num(audit.data.recent_zero_volume_pct, 0)}% of recent bars report zero volume.
           </strong>{' '}
-          The vendor is carrying forward the last traded price, so this series is dated to today
-          but contains no recent trading. Treat the most recent values as unusable.
+          The prices moved, so these are not carried-forward bars and they are kept — but every
+          volume-derived reading below is unreliable, and a strategy with a volume condition
+          cannot evaluate it.
+        </Caveat>
+      )}
+      {audit.data?.is_stale && (
+        <Caveat>
+          <strong>This series is stale.</strong> {audit.data.summary}
         </Caveat>
       )}
       {features.data && !features.data.complete && (
@@ -149,8 +134,16 @@ export default function AssetPage() {
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-3 lg:grid-cols-6">
             <Stat label="Close" value={price(series.at(-1)?.close ?? null, currency)} />
-            <Stat label="1D return" value={pct(asNum('return_1d'))} tone={toneOf(asNum('return_1d'))} />
-            <Stat label="20D return" value={pct(asNum('return_20d'))} tone={toneOf(asNum('return_20d'))} />
+            <Stat
+              label="1D return"
+              value={pct(asNum('return_1d'))}
+              tone={toneOf(asNum('return_1d'))}
+            />
+            <Stat
+              label="20D return"
+              value={pct(asNum('return_20d'))}
+              tone={toneOf(asNum('return_20d'))}
+            />
             <Stat label="RSI 14" value={num(asNum('rsi_14'), 1)} hint="Wilder. 0-100, not a probability" />
             <Stat label="ATR %" value={pct(asNum('atr_pct_14'))} hint="Volatility, comparable across markets" />
             <Stat
@@ -160,92 +153,55 @@ export default function AssetPage() {
             />
           </div>
 
-          <Card
+          {verdict && <VerdictCard row={verdict} />}
+
+          <TimeSeriesChart
             title="Price and exponential moving averages"
-            subtitle={`Split- and dividend-adjusted closes. Last ${series.length} bars.`}
-          >
-            <ResponsiveContainer width="100%" height={320}>
-              <ComposedChart data={series} margin={{ top: 5, right: 8, bottom: 0, left: 8 }}>
-                <CartesianGrid stroke={GRID} vertical={false} />
-                <XAxis
-                  dataKey="ts"
-                  tick={{ fill: AXIS, fontSize: 10 }}
-                  tickFormatter={(v: string) => date(v).slice(2, 7)}
-                  minTickGap={40}
-                  stroke={GRID}
-                />
-                <YAxis
-                  tick={{ fill: AXIS, fontSize: 10 }}
-                  domain={['auto', 'auto']}
-                  tickFormatter={(v: number) => price(v, currency)}
-                  width={64}
-                  stroke={GRID}
-                />
-                <Tooltip content={<ChartTooltip currency={currency} />} />
-                <Line dataKey="close" name="Close" stroke="#e2e8f0" strokeWidth={1.5} dot={false} />
-                <Line dataKey="ema20" name="EMA 20" stroke="#4d9fff" strokeWidth={1} dot={false} />
-                <Line dataKey="ema50" name="EMA 50" stroke="#ffb84d" strokeWidth={1} dot={false} />
-                <Line dataKey="ema200" name="EMA 200" stroke="#ff5c7c" strokeWidth={1} dot={false} />
-              </ComposedChart>
-            </ResponsiveContainer>
-            <Legend
-              items={[
-                ['Close', '#e2e8f0'],
-                ['EMA 20', '#4d9fff'],
-                ['EMA 50', '#ffb84d'],
-                ['EMA 200', '#ff5c7c'],
-              ]}
-            />
-          </Card>
+            note="Split- and dividend-adjusted closes"
+            data={series}
+            series={[
+              { key: 'close', label: 'Close', ink: true },
+              { key: 'ema20', label: 'EMA 20' },
+              { key: 'ema50', label: 'EMA 50' },
+              { key: 'ema200', label: 'EMA 200' },
+            ]}
+            height={300}
+            digits={currency === 'CLP' ? 0 : 2}
+          />
 
           <div className="grid gap-4 lg:grid-cols-2">
-            <Card title="RSI (14)" subtitle="Wilder's smoothing. Bands at 30 and 70.">
-              <ResponsiveContainer width="100%" height={180}>
-                <ComposedChart data={series} margin={{ top: 5, right: 8, bottom: 0, left: 8 }}>
-                  <CartesianGrid stroke={GRID} vertical={false} />
-                  <XAxis dataKey="ts" hide />
-                  <YAxis domain={[0, 100]} ticks={[0, 30, 50, 70, 100]} tick={{ fill: AXIS, fontSize: 10 }} width={32} stroke={GRID} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <ReferenceLine y={70} stroke="#c73e58" strokeDasharray="3 3" />
-                  <ReferenceLine y={30} stroke="#1a9c63" strokeDasharray="3 3" />
-                  <Line dataKey="rsi" name="RSI" stroke="#4d9fff" strokeWidth={1.3} dot={false} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </Card>
-
-            <Card title="MACD (12, 26, 9)" subtitle="Line, signal and histogram.">
-              <ResponsiveContainer width="100%" height={180}>
-                <ComposedChart data={series} margin={{ top: 5, right: 8, bottom: 0, left: 8 }}>
-                  <CartesianGrid stroke={GRID} vertical={false} />
-                  <XAxis dataKey="ts" hide />
-                  <YAxis tick={{ fill: AXIS, fontSize: 10 }} width={48} stroke={GRID} />
-                  <Tooltip content={<ChartTooltip />} />
-                  <ReferenceLine y={0} stroke={AXIS} />
-                  <Bar dataKey="macdHist" name="Histogram" fill="#2f3a52" />
-                  <Line dataKey="macd" name="MACD" stroke="#4d9fff" strokeWidth={1.3} dot={false} />
-                  <Line dataKey="macdSignal" name="Signal" stroke="#ffb84d" strokeWidth={1} dot={false} />
-                </ComposedChart>
-              </ResponsiveContainer>
-            </Card>
+            <TimeSeriesChart
+              title="RSI (14)"
+              note="Wilder's smoothing. Conventional bands at 30 and 70."
+              data={series}
+              series={[{ key: 'rsi', label: 'RSI' }]}
+              height={180}
+              digits={1}
+            />
+            <TimeSeriesChart
+              title="MACD (12, 26, 9)"
+              note="Line and signal. The histogram is their difference."
+              data={series}
+              series={[
+                { key: 'macd', label: 'MACD' },
+                { key: 'macdSignal', label: 'Signal', colour: '#c98500' },
+              ]}
+              height={180}
+              digits={3}
+              zeroLine
+            />
           </div>
 
-          <Card title="Volume" subtitle="Zero-volume sessions are real, and are not tradeable.">
-            <ResponsiveContainer width="100%" height={140}>
-              <BarChart data={series} margin={{ top: 5, right: 8, bottom: 0, left: 8 }}>
-                <CartesianGrid stroke={GRID} vertical={false} />
-                <XAxis
-                  dataKey="ts"
-                  tick={{ fill: AXIS, fontSize: 10 }}
-                  tickFormatter={(v: string) => date(v).slice(2, 7)}
-                  minTickGap={40}
-                  stroke={GRID}
-                />
-                <YAxis tick={{ fill: AXIS, fontSize: 10 }} tickFormatter={compact} width={48} stroke={GRID} />
-                <Tooltip content={<ChartTooltip />} />
-                <Bar dataKey="volume" name="Volume" fill="#2f3a52" />
-              </BarChart>
-            </ResponsiveContainer>
-          </Card>
+          <SignedBarChart
+            title="Daily returns"
+            note="Percentage change of the adjusted close"
+            data={series.map((s) => ({ ts: s.ts, return1d: s.return1d }))}
+            xKey="ts"
+            valueKey="return1d"
+            height={160}
+            digits={2}
+            labelName="Daily return"
+          />
 
           <Card
             title="All computed features"
@@ -259,14 +215,15 @@ export default function AssetPage() {
                 >
                   <span className="truncate font-mono text-2xs text-slate-500">{key}</span>
                   <span
-                    className={
+                    className={clsx(
+                      'font-mono text-xs tnum',
                       typeof value === 'number' && /return|dist_|roc_/.test(key)
-                        ? `font-mono text-xs tnum ${signClass(value)}`
-                        : 'font-mono text-xs tnum text-slate-200'
-                    }
+                        ? signClass(value)
+                        : 'text-slate-200',
+                    )}
                   >
                     {value === null
-                      ? '—'
+                      ? DASH
                       : typeof value === 'boolean'
                         ? value
                           ? 'yes'
@@ -280,13 +237,14 @@ export default function AssetPage() {
 
           {audit.data && (
             <Card title="Data integrity" subtitle={audit.data.summary}>
-              <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-4">
+              <div className="grid grid-cols-2 gap-3 text-xs sm:grid-cols-5">
                 <Field label="Stored bars" value={compact(audit.data.stored_bars)} />
                 <Field label="Missing weekdays" value={String(audit.data.missing_weekdays.length)} />
                 <Field label="Longest gap" value={`${audit.data.longest_gap_sessions} sessions`} />
+                <Field label="Carried forward" value={`${audit.data.stale_quote_run} bars`} />
                 <Field
-                  label="Carried-forward tail"
-                  value={`${audit.data.stale_quote_run} bars`}
+                  label="Zero volume (recent)"
+                  value={`${num(audit.data.recent_zero_volume_pct, 0)}%`}
                 />
               </div>
               <p className="mt-3 text-2xs leading-relaxed text-slate-500">{audit.data.caveat}</p>
@@ -298,9 +256,115 @@ export default function AssetPage() {
   );
 }
 
-function toneOf(value: number | null): 'gain' | 'loss' | 'neutral' {
-  if (value === null) return 'neutral';
-  return value > 0 ? 'gain' : value < 0 ? 'loss' : 'neutral';
+/* ------------------------------------------------------------------ */
+
+function VerdictBadge({ row }: { row: ScanRow }) {
+  const tone = row.action === 'BUY' ? 'gain' : row.action === 'SELL' ? 'loss' : 'neutral';
+  const Icon = row.action === 'BUY' ? ArrowUp : row.action === 'SELL' ? ArrowDown : Minus;
+  return (
+    <div className="flex items-center gap-2">
+      <Badge tone={tone} title={row.score_description}>
+        <Icon className="mr-1 h-3 w-3" />
+        {row.action}
+      </Badge>
+      {!row.tradable && (
+        <Badge tone="loss" title={row.blocked_reason}>
+          not tradable
+        </Badge>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The verdict with its components, so a HOLD is legible.
+ *
+ * Showing which conditions failed is the difference between a decision a reader can
+ * argue with and an opaque label they either trust or ignore.
+ */
+function VerdictCard({ row }: { row: ScanRow }) {
+  return (
+    <Card
+      title={`Strategy verdict: ${row.action}`}
+      subtitle={row.score_description}
+      actions={
+        <div className="flex items-center gap-2">
+          <span className="font-mono text-sm tnum text-slate-200">{num(row.score, 2)}</span>
+          <span className="h-1.5 w-20 overflow-hidden rounded bg-terminal-800" aria-hidden>
+            <span
+              className="block h-full bg-accent"
+              style={{ width: `${Math.max(0, Math.min(1, row.score)) * 100}%` }}
+            />
+          </span>
+        </div>
+      }
+    >
+      {!row.tradable && (
+        <div className="mb-3">
+          <Caveat>{row.blocked_reason}</Caveat>
+        </div>
+      )}
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div>
+          <div className="label mb-1.5">
+            {row.action === 'BUY' ? 'Conditions that hold' : 'Why not an entry'}
+          </div>
+          <ul className="space-y-1">
+            {row.reasons.length === 0 ? (
+              <li className="text-2xs text-slate-600">No reasons recorded.</li>
+            ) : (
+              row.reasons.map((reason) => (
+                <li key={reason} className="flex gap-2 text-2xs leading-relaxed text-slate-400">
+                  <span
+                    className={clsx(
+                      'mt-1.5 h-1 w-1 shrink-0 rounded-full',
+                      row.action === 'BUY' ? 'bg-gain/70' : 'bg-caution/60',
+                    )}
+                    aria-hidden
+                  />
+                  {reason}
+                </li>
+              ))
+            )}
+          </ul>
+        </div>
+
+        <div>
+          <div className="label mb-1.5">If this were entered now</div>
+          <dl className="space-y-1">
+            {[
+              ['Stop', row.stop_price === null ? DASH : price(row.stop_price, row.currency)],
+              [
+                'Target',
+                row.take_profit_price === null
+                  ? DASH
+                  : price(row.take_profit_price, row.currency),
+              ],
+              [
+                'Risk / reward',
+                row.risk_reward === null ? DASH : `${num(row.risk_reward, 2)} : 1`,
+              ],
+              ['Trend score', num(row.trend_score, 2)],
+              ['Momentum score', num(row.momentum_score, 2)],
+            ].map(([label, value]) => (
+              <div
+                key={label}
+                className="flex items-baseline justify-between gap-2 border-b border-terminal-850 py-1"
+              >
+                <dt className="text-2xs text-slate-500">{label}</dt>
+                <dd className="font-mono text-xs tnum text-slate-200">{value}</dd>
+              </div>
+            ))}
+          </dl>
+          <p className="mt-2 text-2xs leading-relaxed text-slate-600">
+            Risk / reward describes the <em>plan</em>. It says nothing about how likely either
+            level is to be reached.
+          </p>
+        </div>
+      </div>
+    </Card>
+  );
 }
 
 function Field({ label, value }: { label: string; value: string }) {
@@ -312,27 +376,19 @@ function Field({ label, value }: { label: string; value: string }) {
   );
 }
 
-function Legend({ items }: { items: Array<[string, string]> }) {
-  return (
-    <div className="mt-2 flex flex-wrap gap-3">
-      {items.map(([name, colour]) => (
-        <span key={name} className="flex items-center gap-1.5 text-2xs text-slate-500">
-          <span className="h-0.5 w-4 rounded" style={{ background: colour }} />
-          {name}
-        </span>
-      ))}
-    </div>
-  );
-}
-
 function BackLink() {
   return (
     <Link
-      to="/universe"
+      to="/scanner"
       className="inline-flex items-center gap-1.5 text-2xs text-slate-500 transition hover:text-slate-300"
     >
       <ArrowLeft className="h-3 w-3" />
-      Back to universe
+      Back to scanner
     </Link>
   );
+}
+
+function toneOf(value: number | null): 'gain' | 'loss' | 'neutral' {
+  if (value === null) return 'neutral';
+  return value > 0 ? 'gain' : value < 0 ? 'loss' : 'neutral';
 }

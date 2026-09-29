@@ -1,19 +1,36 @@
 import { useQuery } from '@tanstack/react-query';
 import clsx from 'clsx';
-import { Activity, AlertTriangle, Database, List, ShieldCheck } from 'lucide-react';
+import {
+  Activity,
+  AlertTriangle,
+  Briefcase,
+  Database,
+  FlaskConical,
+  List,
+  Radar,
+  ShieldCheck,
+  SlidersHorizontal,
+} from 'lucide-react';
 import { NavLink, Navigate, Route, Routes } from 'react-router-dom';
 
 import { Badge } from './components/ui';
 import { api } from './lib/api';
 import AssetPage from './pages/AssetPage';
+import Backtest from './pages/Backtest';
+import { Optimization, Portfolio } from './pages/ComingLater';
 import DataHealth from './pages/DataHealth';
 import Limitations from './pages/Limitations';
 import Overview from './pages/Overview';
+import Scanner from './pages/Scanner';
 import UniversePage from './pages/UniversePage';
 
 const NAV = [
   { to: '/overview', label: 'Overview', icon: Activity },
+  { to: '/scanner', label: 'Scanner', icon: Radar },
+  { to: '/backtest', label: 'Backtest', icon: FlaskConical },
   { to: '/universe', label: 'Universe', icon: List },
+  { to: '/portfolio', label: 'Portfolio', icon: Briefcase, phase: 6 },
+  { to: '/optimization', label: 'Optimization', icon: SlidersHorizontal, phase: 4 },
   { to: '/data-health', label: 'Data health', icon: Database },
   { to: '/limitations', label: 'Limitations', icon: AlertTriangle },
 ];
@@ -35,21 +52,28 @@ function Header() {
         </div>
 
         <nav className="flex flex-1 flex-wrap items-center gap-1">
-          {NAV.map(({ to, label, icon: Icon }) => (
+          {NAV.map(({ to, label, icon: Icon, phase }) => (
             <NavLink
               key={to}
               to={to}
+              title={phase ? `Scheduled for Phase ${phase}` : undefined}
               className={({ isActive }) =>
                 clsx(
                   'inline-flex items-center gap-1.5 rounded px-2.5 py-1.5 text-xs font-medium transition',
                   isActive
                     ? 'bg-terminal-750 text-slate-100'
                     : 'text-slate-400 hover:bg-terminal-800 hover:text-slate-200',
+                  // Routes whose engine does not exist yet are visibly recessive, so the
+                  // nav does not promise more than the app can do.
+                  phase && !isActive && 'text-slate-600',
                 )
               }
             >
               <Icon className="h-3.5 w-3.5" />
               {label}
+              {phase && (
+                <span className="text-[9px] font-normal text-slate-700">P{phase}</span>
+              )}
             </NavLink>
           ))}
         </nav>
@@ -79,7 +103,11 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Navigate to="/overview" replace />} />
           <Route path="/overview" element={<Overview />} />
+          <Route path="/scanner" element={<Scanner />} />
+          <Route path="/backtest" element={<Backtest />} />
           <Route path="/universe" element={<UniversePage />} />
+          <Route path="/portfolio" element={<Portfolio />} />
+          <Route path="/optimization" element={<Optimization />} />
           <Route path="/asset/:symbol" element={<AssetPage />} />
           <Route path="/data-health" element={<DataHealth />} />
           <Route path="/limitations" element={<Limitations />} />

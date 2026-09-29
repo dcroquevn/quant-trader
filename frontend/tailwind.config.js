@@ -17,12 +17,28 @@ export default {
           600: '#2f3a52',
           500: '#465575',
         },
-        // Green/red are for direction only. Never use them for a chart series that
-        // is not signed, or the whole screen stops meaning anything.
+        // ---- Status: direction and state only ----------------------------
+        // Green/red mean up/down. They are never reused as "series 3", and every
+        // place they appear carries a second encoding (a sign, a position relative
+        // to a zero line, or a label) so meaning never rests on colour alone.
         gain: { DEFAULT: '#26d98a', dim: '#1a9c63' },
         loss: { DEFAULT: '#ff5c7c', dim: '#c73e58' },
-        accent: { DEFAULT: '#4d9fff', dim: '#2c6dbf' },
         caution: { DEFAULT: '#ffb84d', dim: '#c98a2e' },
+        accent: { DEFAULT: '#4d9fff', dim: '#2c6dbf' },
+
+        // ---- Categorical: series identity ---------------------------------
+        // Assigned in fixed order, never cycled. Validated against the #141924
+        // panel surface: lightness band, chroma floor, adjacent CVD separation
+        // (worst 8.4 protan), normal-vision floor (19.8) and 3:1 contrast all
+        // pass. The first three also pass all-pairs, which is the cap for
+        // scatter-like forms. A fifth series folds into "Other" or facets --
+        // it never gets a generated hue.
+        series: {
+          1: '#3987e5', // blue
+          2: '#d95926', // orange
+          3: '#199e70', // aqua
+          4: '#c98500', // yellow
+        },
       },
       fontFamily: {
         // Tabular figures matter: a column of prices that shifts horizontally as

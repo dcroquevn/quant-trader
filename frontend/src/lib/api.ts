@@ -178,6 +178,10 @@ export interface AuditResponse {
   stale_quote_run: number;
   /** Count at or above which the backend considers the tail worth flagging. */
   stale_quote_run_threshold: number;
+  /** Share of recent bars reporting zero volume, in percent. */
+  recent_zero_volume_pct: number;
+  /** True when volume-derived features are unevaluable on recent bars. */
+  volume_feed_degraded: boolean;
   summary: string;
   caveat: string;
 }
@@ -205,11 +209,220 @@ export interface ProviderRow {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 2: strategies, scanner, backtest                             */
+/* ------------------------------------------------------------------ */
+
+export interface StrategyInfo {
+  name: string;
+  version: string;
+  description: string;
+  default_params: Record<string, number | string | boolean>;
+}
+
+export interface ScanRow {
+  symbol: string;
+  market: string;
+  currency: string;
+  as_of: string;
+  price: number | null;
+  action: 'BUY' | 'SELL' | 'HOLD';
+  score: number;
+  /** Safe phrasing supplied by the backend. Use it verbatim; never invent wording. */
+  score_description: string;
+  trend_score: number | null;
+  momentum_score: number | null;
+  rsi: number | null;
+  macd_hist: number | null;
+  relative_volume: number | null;
+  atr_pct: number | null;
+  dist_52w_high_pct: number | null;
+  return_20d: number | null;
+  dollar_volume: number | null;
+  stop_price: number | null;
+  take_profit_price: number | null;
+  risk_reward: number | null;
+  bars_available: number;
+  carried_forward_dropped: number;
+  stale: boolean;
+  volume_feed_degraded: boolean;
+  recent_zero_volume_pct: number;
+  tradable: boolean;
+  blocked_reason: string;
+  reasons: string[];
+}
+
+export interface ScanResponse {
+  strategy: { name: string; version: string; description: string };
+  scanned_at: string;
+  disclaimer: string;
+  n_total: number;
+  n_returned: number;
+  n_errors: number;
+  errors: Array<{ symbol: string; market: string; error: string }>;
+  rows: ScanRow[];
+}
+
+export interface TradeRow {
+  symbol: string;
+  market: string;
+  currency: string;
+  entry_date: string;
+  entry_price: number;
+  exit_date: string;
+  exit_price: number;
+  quantity: number;
+  gross_pnl: number;
+  commission: number;
+  slippage_cost: number;
+  pnl: number;
+  pnl_pct: number;
+  holding_period_days: number;
+  bars_held: number;
+  entry_reason: string;
+  exit_reason: string;
+  max_adverse_excursion_pct: number;
+  max_favorable_excursion_pct: number;
+}
+
+export interface BacktestMetrics {
+  initial_equity: number;
+  final_equity: number;
+  total_return_pct: number | null;
+  cagr_pct: number | null;
+  cagr_note?: string;
+  annualised_volatility_pct: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  calmar: number | null;
+  max_drawdown_pct: number | null;
+  peak_date: string | null;
+  trough_date: string | null;
+  recovery_date: string | null;
+  drawdown_days: number | null;
+  exposure_pct: number | null;
+  turnover_pct: number | null;
+  n_trades: number;
+  n_wins: number;
+  n_losses: number;
+  win_rate_pct: number | null;
+  profit_factor: number | null;
+  average_win: number | null;
+  average_loss: number | null;
+  expectancy: number | null;
+  best_trade: number | null;
+  worst_trade: number | null;
+  average_holding_days: number | null;
+  average_bars_held: number | null;
+  risk_free_rate_used: number;
+  n_bars: number;
+  sample_days: number;
+  vs_benchmark?: {
+    available: boolean;
+    reason?: string;
+    excess_total_return_pct: number | null;
+    excess_cagr_pct: number | null;
+    sharpe_difference: number | null;
+    sortino_difference: number | null;
+    drawdown_difference_pct: number | null;
+    volatility_difference_pct: number | null;
+  };
+}
+
+export interface BenchmarkMetrics extends Partial<BacktestMetrics> {
+  available: boolean;
+  reason?: string;
+  label?: string;
+  caveats?: string[];
+  coverage_fraction?: number;
+}
+
+export interface BacktestResponse {
+  label: string;
+  market: string;
+  split: string;
+  /** What the reader needs to know about the partition. Rendered verbatim. */
+  split_note: string;
+  strategy: { name: string; version: string; params: Record<string, unknown> };
+  cost_model: Record<string, number | string>;
+  universe: string[];
+  start_date: string;
+  end_date: string;
+  initial_capital: number;
+  final_equity: number;
+  n_trades: number;
+  metrics: BacktestMetrics;
+  benchmark: BenchmarkMetrics;
+  rejected_entries: Record<string, number>;
+  limitations: string[];
+  disclaimer: string;
+  equity_curve?: Array<{ ts: string; equity: number | null }>;
+  drawdown_curve?: Array<{ ts: string; drawdown_pct: number | null }>;
+  monthly_returns?: Array<{ period: string; return_pct: number | null }>;
+  annual_returns?: Array<{ period: string; return_pct: number | null }>;
+  trades?: TradeRow[];
+}
+
+export interface SplitInfo {
+  split: string;
+  start: string;
+  end: string;
+  readable_via_api: boolean;
+  reason: string;
+  note: string;
+}
+
+export interface ScanParams {
+  market?: string;
+  strategy?: string;
+  action?: string;
+  min_score?: number;
+  sort?: string;
+  limit?: number;
+  tradable_only?: boolean;
+}
+
+export interface BacktestParams {
+  market?: string;
+  strategy?: string;
+  split?: string;
+  start?: string;
+  end?: string;
+  symbols?: string;
+  capital?: number;
+  include_trades?: boolean;
+  include_equity?: boolean;
+}
+
+/* ------------------------------------------------------------------ */
 /* Endpoints                                                          */
 /* ------------------------------------------------------------------ */
 
 export const api = {
   health: () => get<Health>('/api/health'),
+  strategies: () => get<{ strategies: StrategyInfo[]; note: string }>('/api/strategies'),
+  splits: () => get<{ splits: SplitInfo[] }>('/api/splits'),
+  scan: (params: ScanParams = {}) =>
+    get<ScanResponse>('/api/scan', {
+      market: params.market,
+      strategy: params.strategy,
+      action: params.action,
+      min_score: params.min_score,
+      sort: params.sort,
+      limit: params.limit,
+      tradable_only: params.tradable_only ? 'true' : undefined,
+    }),
+  backtest: (params: BacktestParams = {}) =>
+    get<BacktestResponse>('/api/backtest', {
+      market: params.market,
+      strategy: params.strategy,
+      split: params.split,
+      start: params.start,
+      end: params.end,
+      symbols: params.symbols,
+      capital: params.capital,
+      include_trades: params.include_trades === false ? 'false' : undefined,
+      include_equity: params.include_equity === false ? 'false' : undefined,
+    }),
   markets: () => get<Market[]>('/api/markets'),
   providers: () => get<{ providers: ProviderRow[]; all_free: boolean }>('/api/providers'),
   universe: (market?: string) => get<UniverseResponse>('/api/universe', { market }),

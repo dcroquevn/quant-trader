@@ -10,7 +10,7 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 > look-ahead bias. Live order routing is **not implemented** — `LIVE_TRADING=true`
 > is rejected at startup rather than ignored.
 
-**Status: Phases 1–2 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics and HTML reports.
+**Status: Phases 1–3 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics and HTML reports.
 
 Free Chilean data sources were surveyed separately; see
 [docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
@@ -47,8 +47,10 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 557 tests, including look-ahead, leakage and stale-quote detection | Done |
-| Dashboard pages for scanner and backtests | Phase 3 |
+| 592 tests, including look-ahead, leakage and stale-quote detection | Done |
+| Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
+| Validated colour palette (CVD-checked) and a table view on every chart | Done |
+| API contract tests covering every field the dashboard reads | Done |
 | Parameter optimisation and walk-forward | Phase 4 |
 | Historical analogues and statistical scenarios | Phase 5 |
 | Paper trading | Phase 6 |
@@ -187,7 +189,7 @@ quant-trader/
 │   │   │   execution|risk/     (Phase 4+)
 │   │   ├── api/main.py         FastAPI endpoints
 │   │   └── __main__.py         CLI
-│   └── tests/                  557 tests
+│   └── tests/                  592 tests
 ├── frontend/                   React + TypeScript + Vite + Tailwind + Recharts
 ├── data/                       SQLite database (gitignored)
 ├── reports/                    Generated reports (gitignored)
@@ -409,7 +411,7 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 557 tests (554 offline, 3 live)
+python -m pytest                          # 592 tests (589 offline, 3 live)
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
 ```
@@ -445,7 +447,7 @@ double. Notable test groups:
 |---|---|
 | **1** | **Data foundation, database, indicators — complete** |
 | **2** | **Strategy engine, scanner, backtester, metrics, HTML reports — complete** |
-| 3 | Full dashboard |
+| **3** | **Dashboard — complete** |
 | 4 | Optimisation, objective function, train/validation/test, walk-forward |
 | 5 | Projection engine, historical analogues, robustness testing |
 | 6 | Paper trading — Alpaca for US, internal broker for Chile |

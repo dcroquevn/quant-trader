@@ -15,6 +15,9 @@ Two conventions the frontend relies on:
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
 from datetime import date, datetime
 from typing import Any
 
@@ -41,9 +44,23 @@ from app.indicators.registry import compute_features, latest_features
 from app.strategies.registry import build_strategy, strategy_catalog
 from app.strategies.scanner import scan_all, scan_market
 
+@asynccontextmanager
+async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+    """Create the schema before serving the first request.
+
+    A lifespan handler rather than ``@app.on_event("startup")``, which FastAPI
+    deprecated: the old decorator emits a DeprecationWarning at import time, which this
+    project's strict warning filter turns into an error and which would therefore break
+    every API test.
+    """
+    init_database()
+    yield
+
+
 app = FastAPI(
     title="quant-trader API",
     version=__version__,
+    lifespan=lifespan,
     description=(
         "Research API for US and Chilean equities. Every figure returned describes "
         "historical behaviour; none is a forecast."
@@ -63,11 +80,6 @@ app.add_middleware(
     allow_methods=["GET"],
     allow_headers=["*"],
 )
-
-
-@app.on_event("startup")
-def _startup() -> None:
-    init_database()
 
 
 # --------------------------------------------------------------------------- #
@@ -330,6 +342,8 @@ def asset_audit(
         "stale_by_days": report.stale_by_days,
         "stale_quote_run": report.stale_quote_run,
         "stale_quote_run_threshold": STALE_QUOTE_RUN_LIMIT,
+        "recent_zero_volume_pct": report.recent_zero_volume_pct,
+        "volume_feed_degraded": report.volume_feed_degraded,
         "summary": report.summary(),
         "caveat": (
             "Missing weekdays may be exchange holidays. No free holiday calendar is "
