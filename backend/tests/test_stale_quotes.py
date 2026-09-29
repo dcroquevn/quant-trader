@@ -391,3 +391,79 @@ class TestIndexExemption:
         engine = store(session, chile_spec, self._level_series())
         report = engine.audit_symbol(chile_spec)
         assert report.stale_quote_run == 300
+
+
+# --------------------------------------------------------------------------- #
+# Degraded volume feed -- a different failure from a carried-forward tail
+# --------------------------------------------------------------------------- #
+
+
+class TestVolumeFeedDegradation:
+    """Bars with a real price range but zero reported volume.
+
+    Found by running the Phase 2 scanner against live data: 17 of the last 20 *real*
+    bars for several Chilean names carried genuine price movement and zero volume, while
+    every US name was clean. These are not carried-forward quotes, so the flat-tail
+    detector correctly leaves them alone — but every volume-derived feature becomes zero
+    or undefined, and a volume-gated strategy silently stops firing. Undetected, that
+    reads as "no setups" rather than "the input is broken".
+    """
+
+    def _with_zero_volume_tail(self, n_bars: int, n_zero: int) -> pd.DataFrame:
+        """Real price movement throughout; the last ``n_zero`` bars report no volume."""
+        frame = make_bars(n_bars, seed=61)
+        if n_zero:
+            frame.iloc[-n_zero:, frame.columns.get_loc("volume")] = 0.0
+        return frame
+
+    def test_flags_a_mostly_volumeless_recent_window(self, session, chile_spec) -> None:
+        frame = self._with_zero_volume_tail(400, 17)
+        engine = store(session, chile_spec, frame)
+
+        report = engine.audit_symbol(chile_spec, as_of=frame.index[-1].to_pydatetime())
+        assert report.volume_feed_degraded is True
+        assert report.recent_zero_volume_pct == pytest.approx(85.0)
+        assert report.has_findings
+
+    def test_a_clean_feed_is_not_flagged(self, session, usa_spec) -> None:
+        frame = self._with_zero_volume_tail(400, 0)
+        engine = store(session, usa_spec, frame)
+
+        report = engine.audit_symbol(usa_spec, as_of=frame.index[-1].to_pydatetime())
+        assert report.volume_feed_degraded is False
+        assert report.recent_zero_volume_pct == pytest.approx(0.0)
+
+    def test_an_occasional_quiet_session_is_not_degradation(self, session, chile_spec) -> None:
+        """Two zero-volume days in twenty is a thin instrument, not a broken feed."""
+        frame = self._with_zero_volume_tail(400, 2)
+        engine = store(session, chile_spec, frame)
+
+        report = engine.audit_symbol(chile_spec, as_of=frame.index[-1].to_pydatetime())
+        assert report.recent_zero_volume_pct == pytest.approx(10.0)
+        assert report.volume_feed_degraded is False
+
+    def test_measured_separately_from_the_carried_forward_tail(
+        self, session, chile_spec
+    ) -> None:
+        """The two failures are distinct and must be counted independently.
+
+        A flat zero-volume tail is trimmed; a real-price zero-volume run is kept. Folding
+        them together would let the trimmed bars inflate the volume statistic and hide
+        which problem a given instrument actually has.
+        """
+        frame = self._with_zero_volume_tail(400, 17)
+        frame = carry_forward(frame, 5)
+        engine = store(session, chile_spec, frame)
+
+        report = engine.audit_symbol(chile_spec, as_of=frame.index[-1].to_pydatetime())
+        assert report.stale_quote_run == 5
+        assert report.volume_feed_degraded is True
+        summary = report.summary()
+        assert "carried-forward" in summary
+        assert "volume feed degraded" in summary
+
+    def test_summary_states_the_percentage(self, session, chile_spec) -> None:
+        frame = self._with_zero_volume_tail(400, 20)
+        engine = store(session, chile_spec, frame)
+        report = engine.audit_symbol(chile_spec, as_of=frame.index[-1].to_pydatetime())
+        assert "100%" in report.summary()

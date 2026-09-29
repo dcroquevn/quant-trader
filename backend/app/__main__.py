@@ -9,6 +9,7 @@ would be worse than one that says it does not exist yet.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
+from pathlib import Path
 
 import typer
 from rich.console import Console
@@ -16,7 +17,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from app.config import ensure_directories, get_settings
-from app.core.exceptions import InsufficientDataError
+from app.core.exceptions import DataLeakageError, InsufficientDataError
 from app.core.logging import get_logger, setup_logging
 from app.core.markets import MARKETS, all_market_codes
 from app.core.universe import (
@@ -31,7 +32,10 @@ from app.data.engine import DataEngine
 from app.data.provider import Timeframe
 from app.data.registry import provider_cost_table, provider_for_market
 from app.database.base import init_database, session_scope
+from app.backtesting.runner import resolve_window, run_backtest
 from app.indicators.registry import compute_features, latest_features
+from app.strategies.registry import available_strategies, build_strategy, strategy_catalog
+from app.strategies.scanner import scan_all, scan_market
 
 app = typer.Typer(
     name="quant-trader",
@@ -501,16 +505,269 @@ def limitations() -> None:
 # --------------------------------------------------------------------------- #
 
 
+@app.command("strategies")
+def strategies() -> None:
+    """List registered strategies and their default parameters."""
+    for entry in strategy_catalog():
+        console.print(
+            Panel(
+                f"[bold cyan]{entry['name']}[/bold cyan] v{entry['version']}\n\n"
+                f"{entry['description']}",
+                expand=False,
+            )
+        )
+        table = Table(header_style="bold cyan", show_edge=False)
+        table.add_column("parameter")
+        table.add_column("default", justify="right")
+        for key, value in entry["default_params"].items():
+            table.add_row(key, str(value))
+        console.print(table)
+
+
 @app.command("scan")
-def scan() -> None:
-    """[Phase 2] Scan the universe and rank instruments by signal."""
-    _fail_not_implemented("2", "the strategy engine and scanner.")
+def scan(
+    market: str = typer.Option(None, "--market", "-m", help="USA, CHILE, or omit for both."),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    action: str = typer.Option("ALL", "--action", "-a", help="BUY, SELL, HOLD or ALL."),
+    min_score: float = typer.Option(0.0, "--min-score"),
+    sort: str = typer.Option("score", "--sort", help="score, rsi, relative_volume, ..."),
+    limit: int = typer.Option(25, "--limit", "-n"),
+    tradable_only: bool = typer.Option(False, "--tradable-only", help="Hide stale instruments."),
+) -> None:
+    """Scan the universe and rank instruments by the strategy's current reading."""
+    setup_logging()
+    init_database()
+    _banner()
+
+    strategy = build_strategy(strategy_name)
+
+    with session_scope() as session:
+        result = (
+            scan_market(session, strategy, market)
+            if market
+            else scan_all(session, strategy)
+        )
+
+    rows = result.filtered(
+        market=market, action=action, min_score=min_score, tradable_only=tradable_only
+    )
+    order = {r.symbol: i for i, r in enumerate(result.sorted_by(sort))}
+    rows.sort(key=lambda r: order.get(r.symbol, 10**6))
+    rows = rows[:limit]
+
+    table = Table(
+        title=f"Scanner -- {strategy.name} ({len(rows)} of {len(result.rows)} shown)",
+        header_style="bold cyan",
+    )
+    for column in ("mkt", "symbol", "price", "signal", "score", "RSI", "rVol",
+                   "ATR%", "20d", "R:R", "status"):
+        table.add_column(column, overflow="fold")
+
+    for row in rows:
+        colour = {"BUY": "green", "SELL": "red", "HOLD": "dim"}.get(row.action, "white")
+        # Several data problems can coexist, and each blocks a different thing. Showing
+        # only the first would hide that a name is both out of date and missing volume.
+        flags: list[str] = []
+        if row.stale:
+            flags.append("[red]stale[/red]")
+        if row.volume_feed_degraded:
+            flags.append(f"[red]novol {row.recent_zero_volume_pct:.0f}%[/red]")
+        if row.carried_forward_dropped:
+            flags.append(f"[yellow]-{row.carried_forward_dropped}fab[/yellow]")
+        status = " ".join(flags) if flags else "[green]ok[/green]"
+
+        table.add_row(
+            row.market[:3],
+            row.symbol,
+            _fmt(row.price, 2),
+            f"[{colour}]{row.action}[/{colour}]",
+            _fmt(row.score, 2),
+            _fmt(row.rsi, 1),
+            _fmt(row.relative_volume, 2),
+            _fmt(row.atr_pct, 2),
+            _fmt(row.return_20d, 1),
+            _fmt(row.risk_reward, 2),
+            status,
+        )
+    console.print(table)
+
+    if result.errors:
+        console.print(f"[yellow]{len(result.errors)} instrument(s) could not be evaluated:[/yellow]")
+        for error in result.errors[:10]:
+            console.print(f"  [dim]{error['symbol']}: {error['error']}[/dim]")
+
+    console.print(
+        "[dim]Score counts how many of the strategy's conditions currently hold. "
+        "It is not a probability of profit and not an expected return.[/dim]"
+    )
 
 
 @app.command("backtest")
-def backtest() -> None:
-    """[Phase 2] Run a backtest with transaction costs and slippage."""
-    _fail_not_implemented("2", "the event-driven backtester and performance metrics.")
+def backtest(
+    market: str = typer.Option("USA", "--market", "-m"),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    split: str = typer.Option("full", "--split", help="full, train, validation or test."),
+    start: str = typer.Option(None, "--start", help="YYYY-MM-DD."),
+    end: str = typer.Option(None, "--end", help="YYYY-MM-DD."),
+    symbols: str = typer.Option(None, "--symbols", help="Comma-separated canonical symbols."),
+    capital: float = typer.Option(None, "--capital"),
+    finalising: bool = typer.Option(
+        False,
+        "--finalising",
+        help="Required to open the TEST split. Use once, after parameters are frozen.",
+    ),
+) -> None:
+    """Run a backtest with transaction costs, slippage and a benchmark comparison."""
+    setup_logging()
+    init_database()
+    _banner()
+
+    strategy = build_strategy(strategy_name)
+    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+
+    try:
+        window = resolve_window(
+            split,
+            start=date.fromisoformat(start) if start else None,
+            end=date.fromisoformat(end) if end else None,
+            finalising=finalising,
+        )
+    except DataLeakageError as exc:
+        console.print(Panel(f"[red]{exc}[/red]", title="Leakage guard", expand=False))
+        raise typer.Exit(code=3) from exc
+
+    console.print(
+        f"[dim]strategy:[/dim] {strategy.name}  [dim]market:[/dim] {market}  "
+        f"[dim]window:[/dim] {window.describe()}"
+    )
+
+    with session_scope() as session:
+        result = run_backtest(
+            session,
+            strategy,
+            market,
+            split=split,
+            start=date.fromisoformat(start) if start else None,
+            end=date.fromisoformat(end) if end else None,
+            symbols=symbol_list,
+            initial_capital=capital,
+            finalising=finalising,
+        )
+
+    _print_backtest(result)
+
+
+def _fmt(value, digits: int = 2) -> str:
+    """Render a possibly-missing number. A null shows as a dash, never as zero."""
+    if value is None:
+        return "[dim]-[/dim]"
+    try:
+        return f"{float(value):,.{digits}f}"
+    except (TypeError, ValueError):
+        return str(value)
+
+
+def _print_backtest(result) -> None:
+    """Print a backtest result: metrics, benchmark, trades and limitations."""
+    metrics = result.metrics
+    console.print(
+        Panel(
+            f"[bold]{result.config.label}[/bold]\n"
+            f"[dim]split:[/dim] {result.config.split}  "
+            f"[dim]period:[/dim] {result.start_date:%Y-%m-%d} to {result.end_date:%Y-%m-%d}  "
+            f"[dim]universe:[/dim] {len(result.universe)} instruments\n"
+            f"[dim]costs:[/dim] {result.cost_model['round_trip_pct']}% round trip "
+            f"({result.cost_model['market']})",
+            expand=False,
+        )
+    )
+
+    table = Table(title="Performance", header_style="bold cyan")
+    table.add_column("metric")
+    table.add_column("strategy", justify="right")
+    table.add_column("benchmark", justify="right")
+
+    benchmark = result.benchmark_metrics or {}
+    available = benchmark.get("available")
+
+    rows = [
+        ("Total return %", "total_return_pct", 2),
+        ("CAGR %", "cagr_pct", 2),
+        ("Volatility %", "annualised_volatility_pct", 2),
+        ("Sharpe", "sharpe", 3),
+        ("Sortino", "sortino", 3),
+        ("Calmar", "calmar", 3),
+        ("Max drawdown %", "max_drawdown_pct", 2),
+        ("Exposure %", "exposure_pct", 1),
+        ("Turnover %", "turnover_pct", 1),
+    ]
+    for label, key, digits in rows:
+        table.add_row(
+            label,
+            _fmt(metrics.get(key), digits),
+            _fmt(benchmark.get(key), digits) if available else "[dim]n/a[/dim]",
+        )
+
+    table.add_section()
+    for label, key, digits in [
+        ("Trades", "n_trades", 0),
+        ("Win rate %", "win_rate_pct", 1),
+        ("Profit factor", "profit_factor", 2),
+        ("Expectancy", "expectancy", 2),
+        ("Average win", "average_win", 2),
+        ("Average loss", "average_loss", 2),
+        ("Best trade", "best_trade", 2),
+        ("Worst trade", "worst_trade", 2),
+        ("Avg holding days", "average_holding_days", 1),
+    ]:
+        table.add_row(label, _fmt(metrics.get(key), digits), "[dim]-[/dim]")
+
+    console.print(table)
+
+    if not available:
+        console.print(
+            f"[yellow]No benchmark comparison: {benchmark.get('reason', 'unavailable')}[/yellow]"
+        )
+    elif benchmark.get("caveats"):
+        console.print("[yellow]Benchmark caveats:[/yellow]")
+        for caveat in benchmark["caveats"]:
+            console.print(f"  [dim]- {caveat}[/dim]")
+
+    if result.rejected_entries:
+        console.print("[dim]Entries not taken:[/dim]")
+        for reason, count in sorted(
+            result.rejected_entries.items(), key=lambda kv: -kv[1]
+        ):
+            console.print(f"  [dim]{reason}: {count}[/dim]")
+
+    if result.trades:
+        recent = Table(title="Last 10 trades", header_style="bold cyan")
+        for column in ("symbol", "entry", "exit", "days", "PnL", "PnL %", "exit reason"):
+            recent.add_column(column, overflow="fold")
+        for trade in result.trades[-10:]:
+            colour = "green" if trade.pnl > 0 else "red"
+            recent.add_row(
+                trade.symbol,
+                f"{trade.entry_date:%Y-%m-%d}",
+                f"{trade.exit_date:%Y-%m-%d}",
+                str(trade.holding_period_days),
+                f"[{colour}]{trade.pnl:,.2f}[/{colour}]",
+                f"[{colour}]{trade.pnl_pct:+.2f}[/{colour}]",
+                trade.exit_reason,
+            )
+        console.print(recent)
+    else:
+        console.print("[yellow]No trades were taken.[/yellow]")
+
+    console.print(Panel(
+        "\n".join(f"- {item}" for item in result.limitations),
+        title="[yellow]Limitations[/yellow]",
+        expand=False,
+    ))
+    console.print(
+        "[dim]These figures describe one historical sample with these cost assumptions. "
+        "They are not an expectation of future results.[/dim]"
+    )
 
 
 @app.command("optimize")
@@ -542,9 +799,61 @@ def paper() -> None:
 
 
 @app.command("report")
-def report() -> None:
-    """[Phase 2] Generate an HTML backtest report."""
-    _fail_not_implemented("2", "HTML reports including limitations and split provenance.")
+def report(
+    market: str = typer.Option("USA", "--market", "-m"),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    split: str = typer.Option("full", "--split"),
+    start: str = typer.Option(None, "--start"),
+    end: str = typer.Option(None, "--end"),
+    symbols: str = typer.Option(None, "--symbols"),
+    capital: float = typer.Option(None, "--capital"),
+    finalising: bool = typer.Option(False, "--finalising"),
+    output: str = typer.Option(None, "--output", "-o", help="Explicit output file path."),
+) -> None:
+    """Run a backtest and write a standalone HTML report.
+
+    The report needs no network and no build step: charts are inline SVG, so the file
+    still renders from disk years later.
+    """
+    from app.backtesting.report import generate_report
+
+    setup_logging()
+    init_database()
+    _banner()
+
+    strategy = build_strategy(strategy_name)
+    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+
+    try:
+        with session_scope() as session:
+            result = run_backtest(
+                session,
+                strategy,
+                market,
+                split=split,
+                start=date.fromisoformat(start) if start else None,
+                end=date.fromisoformat(end) if end else None,
+                symbols=symbol_list,
+                initial_capital=capital,
+                finalising=finalising,
+            )
+    except DataLeakageError as exc:
+        console.print(Panel(f"[red]{exc}[/red]", title="Leakage guard", expand=False))
+        raise typer.Exit(code=3) from exc
+
+    path = (
+        generate_report(result, output_dir=Path(output).parent, filename=Path(output).name)
+        if output
+        else generate_report(result)
+    )
+
+    console.print(f"[green]OK[/green] report written to [cyan]{path}[/cyan]")
+    console.print(
+        f"[dim]{result.n_trades} trades, "
+        f"total return {_fmt(result.metrics.get('total_return_pct'))}%, "
+        f"Sharpe {_fmt(result.metrics.get('sharpe'), 3)}, "
+        f"split {result.config.split}[/dim]"
+    )
 
 
 @app.command("serve")

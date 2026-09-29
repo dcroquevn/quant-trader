@@ -10,7 +10,7 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 > look-ahead bias. Live order routing is **not implemented** — `LIVE_TRADING=true`
 > is rejected at startup rather than ignored.
 
-**Status: Phase 1 of 8 complete** — data foundation, database and indicators.
+**Status: Phases 1–2 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics and HTML reports.
 
 Free Chilean data sources were surveyed separately; see
 [docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
@@ -42,9 +42,14 @@ what turned out not to.
 | 40 technical indicators, all verified free of look-ahead bias | Done |
 | CLI for data operations | Done |
 | REST API + dark-mode dashboard showing stored data and indicators | Done |
-| 328 tests, including look-ahead, leakage and stale-quote detection | Done |
-| Strategy engine, scanner, backtester | Phase 2 |
-| Optimisation, train/validation/test, walk-forward | Phase 4 |
+| Strategy engine with configurable trend/momentum/volume/volatility components | Done |
+| Universe scanner that refuses to rank on broken data | Done |
+| Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
+| Full metric set, benchmark comparison, standalone HTML reports | Done |
+| Train/validation/test split guard (TEST refused unless finalising) | Done |
+| 557 tests, including look-ahead, leakage and stale-quote detection | Done |
+| Dashboard pages for scanner and backtests | Phase 3 |
+| Parameter optimisation and walk-forward | Phase 4 |
 | Historical analogues and statistical scenarios | Phase 5 |
 | Paper trading | Phase 6 |
 
@@ -119,13 +124,19 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app universe` | The configured universe and each market's benchmark |
 | `python -m app providers` | Providers, capabilities and cost |
 | `python -m app limitations` | Everything this system cannot tell you |
+| `python -m app strategies` | Registered strategies and their parameters |
+| `python -m app scan` | Rank the universe by the strategy's current reading |
+| `python -m app backtest` | Backtest with costs, slippage and a benchmark |
+| `python -m app report` | Backtest plus a standalone HTML report |
 | `python -m app serve` | Run the API |
 
 Useful flags: `--market USA|CHILE`, `--symbols AAPL,SQM-B`, `--timeframe 1D|1H|15m|5m`,
 `--start`/`--end`, `--full`.
 
-**Registered but refusing to run:** `scan`, `backtest`, `optimize`, `walk-forward`,
-`project`, `paper`, `report`.
+**Registered but refusing to run:** `optimize`, `walk-forward`, `project`, `paper`.
+
+Backtest flags: `--split full|train|validation|test`, `--strategy`, `--symbols`,
+`--start`/`--end`, `--capital`, `--finalising`.
 
 ---
 
@@ -160,11 +171,23 @@ quant-trader/
 │   │   │   ├── price.py        Returns, 52-week distances
 │   │   │   ├── forward.py      QUARANTINED look-ahead outcome labels
 │   │   │   └── registry.py     compute_features() — one vocabulary
-│   │   ├── strategies|backtesting|optimization|
-│   │   │   projections|portfolio|execution|risk/     (Phase 2+)
+│   │   ├── strategies/
+│   │   │   ├── base.py         Strategy ABC, Decision, leakage guard
+│   │   │   ├── trend_momentum.py   The default strategy
+│   │   │   ├── scanner.py      Universe ranking with data-quality gates
+│   │   │   └── registry.py     Lookup and parameter validation
+│   │   ├── backtesting/
+│   │   │   ├── costs.py        Commission, spread, slippage, per market
+│   │   │   ├── portfolio.py    Cash and position accounting
+│   │   │   ├── engine.py       Event-driven loop, stops, targets, sizing
+│   │   │   ├── metrics.py      Performance metrics and benchmark comparison
+│   │   │   ├── runner.py       bars → features → backtest → metrics
+│   │   │   └── report.py       Standalone HTML reports
+│   │   ├── optimization|projections|portfolio|
+│   │   │   execution|risk/     (Phase 4+)
 │   │   ├── api/main.py         FastAPI endpoints
 │   │   └── __main__.py         CLI
-│   └── tests/                  328 tests
+│   └── tests/                  557 tests
 ├── frontend/                   React + TypeScript + Vite + Tailwind + Recharts
 ├── data/                       SQLite database (gitignored)
 ├── reports/                    Generated reports (gitignored)
@@ -195,6 +218,22 @@ on the forward columns — so the detector cannot silently become vacuous.
 assumption, it is a wrong one, and the error grows with turnover. Chile's
 placeholder costs are set higher than the US on purpose.
 
+**A signal on bar `t` fills at bar `t+1`'s open.** A decision made from a bar's close
+cannot be executed at that same close — the close has already happened by the time you
+know it. This makes every backtest here worse than a naive one, and it is the difference
+between a measurement and a fantasy. A test builds a one-bar price spike and asserts the
+engine *cannot* capture it.
+
+**Intrabar ambiguity is resolved against the strategy.** When a bar's range contains both
+the stop and the take-profit, daily data cannot say which came first, so the stop is
+assumed to fill. A gap through the stop fills at the open, not the stop price — you
+cannot be filled where the market never traded.
+
+**The TEST split is refused by default.** `resolve_window("test")` raises
+`DataLeakageError` unless `finalising=True` is passed explicitly, and the HTTP endpoint
+returns 409 with no override at all. Reading the test partition during a search turns it
+into a second validation set and leaves no out-of-sample estimate.
+
 **Split provenance is persisted.** Every backtest row records which partition it
 read, and a database `CHECK` constraint prevents an `OptimizationRun` from claiming
 anything other than `train`.
@@ -224,6 +263,46 @@ PostgreSQL). No paid API, database, cloud service or market-data feed is wired i
 anywhere.
 
 ---
+
+---
+
+## What the default strategy actually did
+
+Measured, not claimed. `trend_momentum` on default parameters, with the configured cost
+assumptions, over the real downloaded data. **These are not recommendations, and the
+train figures carry no out-of-sample information at all.**
+
+| | USA train<br>2016–2021 | USA validation<br>2022–2023 | Chile train<br>2016–2021 |
+|---|---|---|---|
+| Total return | +76.9% | +12.8% | **−19.9%** |
+| Benchmark | +163.7% (SPY) | +2.7% (SPY) | −15.3% (ECH proxy) |
+| CAGR | 10.0% | 6.3% | −3.6% |
+| Volatility | 8.8% | 7.7% | 5.8% |
+| Sharpe | 1.12 | 0.83 | **−0.61** |
+| Max drawdown | −12.7% | −9.1% | −28.0% |
+| Trades | 377 | 95 | 267 |
+| Win rate | 39.5% | — | 24.3% |
+| Profit factor | 1.74 | — | **0.71** |
+| Exposure | 40.7% | 24.5% | 27.4% |
+| Turnover (annualised) | 1,274% | 978% | 895% |
+
+Three things worth reading carefully:
+
+**It badly underperformed buy-and-hold in the US on total return** (+77% against SPY's
++164%) while taking far less risk — lower volatility, a third of the drawdown, and a
+slightly better Sharpe. Whether that trade is worth making is a question about your
+objectives, not about the numbers.
+
+**The same strategy loses money in Chile.** Sharpe −0.61, profit factor 0.71, win rate
+24%. Chilean round-trip costs are assumed at 1.0% against the US 0.08%, and at ~900%
+annual turnover that alone consumes roughly 9% a year. This is the concrete answer to the
+brief's instruction not to assume the optimal parameters are the same in both markets —
+here the *unoptimised* ones are not even viable.
+
+**Turnover is the headline risk to all of it.** Around 1,000% a year means friction
+assumptions dominate the result. The US figures rest on an assumed 0.08% round trip; at a
+realistic retail cost the edge largely disappears. Replace the placeholders in `.env` with
+your broker's actual schedule before drawing any conclusion.
 
 ## Limitations you must know about
 
@@ -330,7 +409,7 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 328 tests (325 offline, 3 live)
+python -m pytest                          # 557 tests (554 offline, 3 live)
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
 ```
@@ -349,6 +428,14 @@ double. Notable test groups:
 - **`test_database.py`** — upsert idempotency, constraint enforcement, adjusted-price
   round trips, duplicate-order rejection.
 - **`test_config.py`** — live-trading refusal, split-overlap refusal, non-zero costs.
+- **`test_backtest_engine.py`** — the spike test described above, the equity/cash
+  accounting identity after every fill, intrabar tie-breaks, gap fills, and sizing limits.
+- **`test_costs.py`** — that friction always hurts. A round trip at an unchanged price
+  must lose money, and slippage must not be charged twice.
+- **`test_runner.py`** — the split guard, including that a split cannot be widened past
+  its own bounds.
+- **`test_metrics.py`** — metric values against hand arithmetic, and that undefined
+  metrics return null rather than zero or infinity.
 
 ---
 
@@ -357,7 +444,7 @@ double. Notable test groups:
 | Phase | Scope |
 |---|---|
 | **1** | **Data foundation, database, indicators — complete** |
-| 2 | Strategy engine, scanner, backtester, metrics, HTML reports |
+| **2** | **Strategy engine, scanner, backtester, metrics, HTML reports — complete** |
 | 3 | Full dashboard |
 | 4 | Optimisation, objective function, train/validation/test, walk-forward |
 | 5 | Projection engine, historical analogues, robustness testing |

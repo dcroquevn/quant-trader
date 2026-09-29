@@ -56,6 +56,7 @@ __all__ = [
     "DataEngine",
     "trim_carried_forward_tail",
     "STALE_QUOTE_RUN_LIMIT",
+    "ZERO_VOLUME_ALERT_FRACTION",
 ]
 
 
@@ -63,6 +64,19 @@ __all__ = [
 # have been mid-session and provisional; overlapping re-writes it with the
 # settled values. Three days also covers a weekend.
 INCREMENTAL_OVERLAP_DAYS = 5
+
+ZERO_VOLUME_WINDOW = 20
+"""Recent bars examined for a degraded volume feed."""
+
+ZERO_VOLUME_ALERT_FRACTION = 0.5
+"""Fraction of recent bars with zero volume before the feed is called degraded.
+
+Observed on 2026-09-27: 17 of the last 20 real Chilean bars had a genuine price range
+and zero reported volume, while all US instruments were clean. Those bars are not
+carried-forward quotes -- the price moved -- so they are kept, but every volume-derived
+feature becomes zero or undefined and a strategy with a volume gate silently stops
+firing. Half is well above the ~2% historical base rate for these instruments.
+"""
 
 STALE_QUOTE_RUN_LIMIT = 3
 """Trailing carried-forward bars before the audit flags a series as notable.
@@ -131,6 +145,16 @@ class GapReport:
     hole is what decides whether the series is usable.
     """
 
+    recent_zero_volume_pct: float = 0.0
+    """Share of the last ``ZERO_VOLUME_WINDOW`` bars reporting zero volume, in percent.
+
+    Separate from ``stale_quote_run`` and measuring a different failure: those bars are
+    flat *and* volumeless, these have real price movement with no volume. The second kind
+    silently disables every volume-based rule instead of looking like missing data.
+    """
+
+    volume_feed_degraded: bool = False
+
     is_stale: bool = False
     stale_by_days: int = 0
 
@@ -151,6 +175,7 @@ class GapReport:
             or self.duplicate_timestamps
             or self.is_stale
             or self.stale_quote_run >= STALE_QUOTE_RUN_LIMIT
+            or self.volume_feed_degraded
         )
 
     def summary(self) -> str:
@@ -168,6 +193,11 @@ class GapReport:
             parts.append(f"stale by {self.stale_by_days}d")
         if self.stale_quote_run:
             parts.append(f"{self.stale_quote_run} trailing carried-forward quotes")
+        if self.volume_feed_degraded:
+            parts.append(
+                f"volume feed degraded ({self.recent_zero_volume_pct:.0f}% of recent "
+                "bars report zero volume)"
+            )
         return "; ".join(parts)
 
 
@@ -500,6 +530,16 @@ class DataEngine:
             report.stale_quote_run = 0
         else:
             report.stale_quote_run = _trailing_stale_quote_run(frame)
+
+        # Measured on the bars that survive trimming, so the flat tail does not inflate
+        # it -- the two failures are counted separately on purpose.
+        real_bars, _ = trim_carried_forward_tail(frame)
+        if "volume" in real_bars.columns and len(real_bars):
+            recent = real_bars["volume"].tail(ZERO_VOLUME_WINDOW)
+            if len(recent):
+                fraction = float((recent.fillna(0.0) <= 0).mean())
+                report.recent_zero_volume_pct = round(fraction * 100.0, 2)
+                report.volume_feed_degraded = fraction >= ZERO_VOLUME_ALERT_FRACTION
 
         reference = as_of or datetime.now(timezone.utc)
         age_days = (reference - report.last_bar).days

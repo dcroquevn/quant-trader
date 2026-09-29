@@ -35,7 +35,11 @@ from app.data.engine import STALE_QUOTE_RUN_LIMIT, DataEngine
 from app.data.provider import Timeframe
 from app.data.registry import provider_cost_table
 from app.database.base import init_database, session_scope
+from app.backtesting.runner import resolve_window, run_backtest
+from app.core.exceptions import DataLeakageError
 from app.indicators.registry import compute_features, latest_features
+from app.strategies.registry import build_strategy, strategy_catalog
+from app.strategies.scanner import scan_all, scan_market
 
 app = FastAPI(
     title="quant-trader API",
@@ -332,6 +336,217 @@ def asset_audit(
             "available for the Bolsa de Santiago, so these are candidates only."
         ),
     }
+
+
+@app.get("/api/strategies")
+def strategies() -> dict[str, Any]:
+    """Registered strategies with their default parameters."""
+    return {
+        "strategies": strategy_catalog(),
+        "note": (
+            "No strategy here is known to be profitable. A strategy's score counts how "
+            "many of its conditions currently hold and is not a probability."
+        ),
+    }
+
+
+@app.get("/api/scan")
+def scan(
+    market: str | None = Query(None, description="USA, CHILE, or omit for both."),
+    strategy: str = Query("trend_momentum"),
+    action: str = Query("ALL", description="BUY, SELL, HOLD or ALL."),
+    min_score: float = Query(0.0, ge=0.0, le=1.0),
+    sort: str = Query("score"),
+    limit: int = Query(100, ge=1, le=1000),
+    tradable_only: bool = Query(False),
+) -> dict[str, Any]:
+    """Rank the universe by the strategy's current reading.
+
+    Rows carry their own data-quality state. An instrument whose last real print is weeks
+    old, or whose volume feed has stopped reporting, comes back with ``tradable=false``
+    and a reason — because a BUY on such a series is not a signal, and the UI must be able
+    to say so rather than render it like any other row.
+    """
+    try:
+        built = build_strategy(strategy)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0] if exc.args else exc)) from exc
+
+    with session_scope() as session:
+        result = (
+            scan_market(session, built, market, log_decisions=False)
+            if market
+            else scan_all(session, built, log_decisions=False)
+        )
+
+    try:
+        ordered = result.sorted_by(sort)
+    except KeyError as exc:
+        raise HTTPException(status_code=400, detail=str(exc.args[0] if exc.args else exc)) from exc
+
+    position = {row.symbol: i for i, row in enumerate(ordered)}
+    rows = result.filtered(
+        market=market, action=action, min_score=min_score, tradable_only=tradable_only
+    )
+    rows.sort(key=lambda r: position.get(r.symbol, 10**6))
+
+    return {
+        "strategy": result.strategy,
+        "scanned_at": result.scanned_at.isoformat(),
+        "disclaimer": result.disclaimer,
+        "n_total": len(result.rows),
+        "n_returned": min(len(rows), limit),
+        "n_errors": len(result.errors),
+        "errors": result.errors,
+        "rows": [r.to_dict() for r in rows[:limit]],
+    }
+
+
+@app.get("/api/backtest")
+def backtest(
+    market: str = Query("USA"),
+    strategy: str = Query("trend_momentum"),
+    split: str = Query("full", description="full, train, validation or test."),
+    start: date | None = Query(None),
+    end: date | None = Query(None),
+    symbols: str | None = Query(None, description="Comma-separated canonical symbols."),
+    capital: float | None = Query(None, gt=0),
+    include_trades: bool = Query(True),
+    include_equity: bool = Query(True),
+) -> dict[str, Any]:
+    """Run a backtest and return metrics, benchmark comparison and limitations.
+
+    The TEST split is refused with HTTP 409. It is reserved for a single evaluation after
+    parameters are frozen, and an HTTP endpoint is exactly the kind of thing that would
+    otherwise get called repeatedly against it. Finalising a test result is deliberately
+    a CLI-only action.
+    """
+    try:
+        built = build_strategy(strategy)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0] if exc.args else exc)) from exc
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+
+    try:
+        with session_scope() as session:
+            result = run_backtest(
+                session,
+                built,
+                market,
+                split=split,
+                start=start,
+                end=end,
+                symbols=symbol_list,
+                initial_capital=capital,
+            )
+    except DataLeakageError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=str(exc.args[0] if exc.args else exc)) from exc
+    except Exception as exc:  # noqa: BLE001 -- surface the reason, never a bare 500
+        raise HTTPException(status_code=400, detail=f"{type(exc).__name__}: {exc}") from exc
+
+    payload: dict[str, Any] = {
+        "label": result.config.label,
+        "market": result.config.market,
+        "split": result.config.split,
+        "split_note": _split_note(result.config.split),
+        "strategy": result.strategy,
+        "cost_model": result.cost_model,
+        "universe": result.universe,
+        "start_date": result.start_date.isoformat(),
+        "end_date": result.end_date.isoformat(),
+        "initial_capital": result.config.initial_capital,
+        "final_equity": result.final_equity,
+        "n_trades": result.n_trades,
+        "metrics": result.metrics,
+        "benchmark": result.benchmark_metrics,
+        "rejected_entries": result.rejected_entries,
+        "limitations": result.limitations,
+        "disclaimer": (
+            "These figures describe one historical sample under the stated cost "
+            "assumptions. None is a forecast or an expectation of future results."
+        ),
+    }
+
+    if include_equity and len(result.equity_curve):
+        payload["equity_curve"] = [
+            {"ts": ts.isoformat(), "equity": _num(value)}
+            for ts, value in result.equity_curve.items()
+        ]
+        from app.backtesting.metrics import (
+            annual_returns,
+            drawdown_series,
+            monthly_returns,
+        )
+
+        payload["drawdown_curve"] = [
+            {"ts": ts.isoformat(), "drawdown_pct": _num(value)}
+            for ts, value in drawdown_series(result.equity_curve).items()
+        ]
+        payload["monthly_returns"] = [
+            {"period": str(ts.date()), "return_pct": _num(value)}
+            for ts, value in monthly_returns(result.equity_curve).items()
+        ]
+        payload["annual_returns"] = [
+            {"period": str(ts.year), "return_pct": _num(value)}
+            for ts, value in annual_returns(result.equity_curve).items()
+        ]
+
+    if include_trades:
+        payload["trades"] = [t.to_dict() for t in result.trades]
+
+    return payload
+
+
+def _split_note(split: str) -> str:
+    """What the reader needs to know about the partition that produced the numbers."""
+    return {
+        "train": (
+            "TRAIN partition: the data a parameter search is allowed to read, so these "
+            "results carry no out-of-sample information."
+        ),
+        "validation": (
+            "VALIDATION partition: used to choose between candidates. Repeatedly "
+            "selecting on it gradually turns it into training data."
+        ),
+        "test": (
+            "TEST partition: meant to be read once, after parameters are frozen."
+        ),
+        "full": (
+            "Full history: convenient for inspection, but nothing here is out-of-sample "
+            "because no data was held back."
+        ),
+    }.get(split, "")
+
+
+@app.get("/api/splits")
+def splits() -> dict[str, Any]:
+    """The configured train/validation/test ranges, and which are readable.
+
+    Surfaced so the dashboard can show the partition layout and grey out TEST rather than
+    offering a button that returns 409.
+    """
+    out = []
+    for name in ("train", "validation", "test"):
+        try:
+            window = resolve_window(name)
+            readable, reason = True, ""
+        except DataLeakageError as exc:
+            window = resolve_window(name, finalising=True)
+            readable, reason = False, str(exc)
+        out.append(
+            {
+                "split": name,
+                "start": window.start.isoformat(),
+                "end": window.end.isoformat(),
+                "readable_via_api": readable,
+                "reason": reason,
+                "note": _split_note(name),
+            }
+        )
+    return {"splits": out}
 
 
 @app.get("/api/limitations")
