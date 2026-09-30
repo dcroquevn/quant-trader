@@ -5,6 +5,7 @@ import { useMemo } from 'react';
 import { Link, useParams, useSearchParams } from 'react-router-dom';
 
 import { SignedBarChart, TimeSeriesChart } from '../components/charts';
+import { Projection } from '../components/Projection';
 import { Badge, Card, Caveat, ErrorState, Loading, Stat } from '../components/ui';
 import { api, type FeatureHistoryRow, type ScanRow } from '../lib/api';
 import { DASH, compact, date, marketFlag, num, pct, price, signClass } from '../lib/format';
@@ -154,6 +155,8 @@ export default function AssetPage() {
           </div>
 
           {verdict && <VerdictCard row={verdict} />}
+
+          <Projection symbol={symbol} market={market} currency={currency} />
 
           <TimeSeriesChart
             title="Price and exponential moving averages"

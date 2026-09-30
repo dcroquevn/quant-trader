@@ -539,6 +539,69 @@ export interface WalkForwardDetail extends WalkForwardSummary {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 5: historical analogues and scenarios                        */
+/* ------------------------------------------------------------------ */
+
+export interface Scenario {
+  label: 'bear' | 'base' | 'bull';
+  percentile: number | null;
+  return_pct: number;
+  price: number | null;
+  /** What this figure is, in words, from the backend. Render verbatim. */
+  basis: string;
+  adverse_excursion_pct: number | null;
+}
+
+export interface AnalogueBaseline {
+  available: boolean;
+  reason?: string;
+  n_bars?: number;
+  match_share_pct?: number;
+  median_return_pct?: number;
+  p10_return_pct?: number;
+  p90_return_pct?: number;
+  positive_share_pct?: number;
+  note?: string;
+}
+
+export interface ScenarioSet {
+  symbol: string;
+  market: string;
+  currency: string;
+  as_of: string;
+  horizon: number;
+  current_price: number | null;
+  available: boolean;
+  /** When unavailable, carries "Insufficient historical evidence" verbatim. */
+  reason: string;
+  n_observations: number;
+  n_raw_matches: number;
+  positive_share_pct: number | null;
+  baseline: AnalogueBaseline;
+  /** False when these percentiles merely restate the unconditional base rate. */
+  adds_information: boolean;
+  setup: Record<string, number>;
+  scenarios: Scenario[];
+  caveats: string[];
+  language_note: string;
+}
+
+export interface ProjectionResponse {
+  symbol: string;
+  market: string;
+  currency: string;
+  current_price: number;
+  as_of: string;
+  bars_available: number;
+  pooled_symbols: string[];
+  horizons: Record<string, ScenarioSet>;
+  horizons_with_evidence: number[];
+  match_features: Array<{ name: string; tolerance: number; weight: number }>;
+  max_distance: number;
+  note: string;
+}
+
+/* ------------------------------------------------------------------ */
 /* Endpoints                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -546,6 +609,11 @@ export const api = {
   health: () => get<Health>('/api/health'),
   strategies: () => get<{ strategies: StrategyInfo[]; note: string }>('/api/strategies'),
   splits: () => get<{ splits: SplitInfo[] }>('/api/splits'),
+  projection: (symbol: string, market?: string, horizons?: string) =>
+    get<ProjectionResponse>(`/api/assets/${encodeURIComponent(symbol)}/projection`, {
+      market,
+      horizons,
+    }),
   objectivePresets: () =>
     get<{ presets: Record<string, Record<string, number>>; note: string }>(
       '/api/objective-presets',

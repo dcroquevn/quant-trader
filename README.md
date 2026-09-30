@@ -10,7 +10,7 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 > look-ahead bias. Live order routing is **not implemented** — `LIVE_TRADING=true`
 > is rejected at startup rather than ignored.
 
-**Status: Phases 1–4 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics, HTML reports, dashboard, parameter optimisation, walk-forward analysis and robustness testing.
+**Status: Phases 1–5 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics, HTML reports, dashboard, parameter optimisation, walk-forward analysis, robustness testing, historical analogues and statistical scenarios.
 
 Free Chilean data sources were surveyed separately; see
 [docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
@@ -47,7 +47,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 693 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 760 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -55,7 +55,8 @@ what turned out not to.
 | Train/validation/test separation, enforced in four independent places | Done |
 | Walk-forward analysis: optimise, freeze, trade the next window, repeat | Done |
 | Six robustness checks, including fragility and cost-breakeven | Done |
-| Historical analogues and statistical scenarios | Phase 5 |
+| Historical analogues with overlap correction and a base-rate comparison | Done |
+| Percentile scenarios that refuse to be forecasts | Done |
 | Paper trading | Phase 6 |
 
 Commands belonging to later phases are registered and **refuse to run**, naming
@@ -137,12 +138,13 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app walk-forward` | Rolling out-of-sample analysis |
 | `python -m app robustness` | Stress-test one configuration |
 | `python -m app runs` | List stored searches and studies |
+| `python -m app project SYMBOL` | What followed similar historical situations |
 | `python -m app serve` | Run the API |
 
 Useful flags: `--market USA|CHILE`, `--symbols AAPL,SQM-B`, `--timeframe 1D|1H|15m|5m`,
 `--start`/`--end`, `--full`.
 
-**Registered but refusing to run:** `project` (Phase 5), `paper` (Phase 6).
+**Registered but refusing to run:** `paper` (Phase 6).
 
 Backtest flags: `--split full|train|validation|test`, `--strategy`, `--symbols`,
 `--start`/`--end`, `--capital`, `--finalising`.
@@ -199,11 +201,14 @@ quant-trader/
 │   │   │   ├── walkforward.py  Rolling windows with frozen parameters
 │   │   │   ├── robustness.py   Six stress tests
 │   │   │   └── store.py        Persisting runs for the dashboard to read
-│   │   ├── projections|portfolio|
-│   │   │   execution|risk/     (Phase 5+)
+│   │   ├── projections/
+│   │   │   ├── analogues.py    Similarity search + overlap correction
+│   │   │   ├── scenarios.py    Percentile cases, never forecasts
+│   │   │   └── runner.py       Wires it to stored data
+│   │   ├── portfolio|execution|risk/     (Phase 6+)
 │   │   ├── api/main.py         FastAPI endpoints
 │   │   └── __main__.py         CLI
-│   └── tests/                  693 tests
+│   └── tests/                  760 tests
 ├── frontend/                   React + TypeScript + Vite + Tailwind + Recharts
 ├── data/                       SQLite database (gitignored)
 ├── reports/                    Generated reports (gitignored)
@@ -266,6 +271,19 @@ presets ship.
 *neighbours* evaluated, and a configuration that scores well only at its own exact
 settings is marked down. Without that, a search reports the highest peak it found — and
 the highest peak in a noisy landscape is noise.
+
+**Overlapping observations are not counted separately.** Take every bar as an observation
+and measure the next 20 days from each: two observations one day apart share 19 of those
+20 days. "127 historical observations" may contain six independent ones. Analogue matches
+are therefore thinned so no two retained observations share any forward window or any
+date, and every judgement uses the thinned count. On real data this is the difference
+between claiming 921 observations and reporting 194.
+
+**Every analogue distribution is compared against the base rate.** A conditional
+distribution that reproduces the unconditional one carries the authority of a finding
+without the content, and the two are indistinguishable on screen. So the base rate is
+computed over the same bars and reported alongside, with an `adds_information` flag that
+is false when they barely differ.
 
 **Split provenance is persisted.** Every backtest row records which partition it
 read, and a database `CHECK` constraint prevents an `OptimizationRun` from claiming
@@ -401,6 +419,54 @@ The procedure is re-fitting each period rather than converging on a stable setti
 means the parameters it would choose for the next year carry little information. That is
 the most important finding here, and it is not visible in the headline at all.
 
+## The projection engine, and what calibrating it revealed
+
+`python -m app project NVDA` answers "when conditions looked like this before, what
+happened next?" — never "what will happen next". It finds past bars whose conditions
+resembled the current setup and reports the distribution of what followed, as three
+percentiles:
+
+```
+NVDA (USA) -- 20-bar outcomes after 194 similar historical situations
+  61% of those situations were followed by a gain.
+
+  BEAR  p10    -9.95%  ->  202.67 USD
+  BASE  p50    +2.07%  ->  229.72 USD
+  BULL  p90   +12.97%  ->  254.26 USD
+
+  base rate (all bars): median +2.12%  p10 -7.78%  p90 +12.34%
+```
+
+Two things in that output exist because the first version was wrong.
+
+**921 matches became 194 observations.** Consecutive daily bars share almost all of their
+forward window, so counting them separately overstates the evidence by roughly the horizon
+length. Matches are thinned until no two share a forward window or a date — instruments in
+one market move together, so fifteen of them on one day are nearer to one observation than
+to fifteen.
+
+**The base rate is on the same line as the result.** The original default similarity
+ceiling matched 54% of all candidate bars, and the resulting "conditional" distribution
+reproduced the unconditional one to within a tenth of a point:
+
+| | median | p10 | p90 |
+|---|---|---|---|
+| matched, ceiling 1.0 | +2.05% | −8.27% | +11.78% |
+| **unconditional base rate** | **+2.12%** | **−7.78%** | **+12.34%** |
+| matched, ceiling 0.3 | +2.07% | **−9.95%** | +12.97% |
+
+At the loose ceiling the projection was telling us nothing beyond "these instruments rose
+on average over this period", while looking exactly like a conditional finding. The default
+moved to 0.3, which matches about 2% of candidates and produces a materially deeper
+downside tail — and the base rate is now reported with every result, with an
+`adds_information` flag that is false when the matching has isolated nothing.
+
+A thin sample produces the phrase **"Insufficient historical evidence"** and no numbers at
+all. At the default settings, 3 of 15 US instruments fall into that category. There is no
+fallback to a looser search or a shorter horizon: relaxing the criteria until a number
+appears is how insufficient evidence becomes a median, and that median would be
+indistinguishable from a good one.
+
 ## Limitations you must know about
 
 Run `python -m app limitations`, or open the Limitations page in the dashboard.
@@ -506,7 +572,7 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 693 tests (690 offline, 3 live)
+python -m pytest                          # 760 tests (757 offline, 3 live)
 python -m pytest -m 'not slow'            # skip the minutes-long integration tests
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
@@ -543,6 +609,9 @@ double. Notable test groups:
 - **`test_strategies.py`** — that the engine's fast path agrees with the reference
   implementation bar by bar. It is 22x faster, and a fast path that disagreed would be
   worse than a slow one.
+- **`test_projections.py`** — that twenty consecutive bars collapse to one observation,
+  that a thin sample yields the phrase and no numbers, and that a distribution matching the
+  base rate is flagged as uninformative.
 
 ---
 
@@ -554,7 +623,7 @@ double. Notable test groups:
 | **2** | **Strategy engine, scanner, backtester, metrics, HTML reports — complete** |
 | **3** | **Dashboard — complete** |
 | **4** | **Optimisation, objective function, walk-forward, robustness — complete** |
-| 5 | Projection engine, historical analogues, robustness testing |
+| **5** | **Projection engine and historical analogues — complete** |
 | 6 | Paper trading — Alpaca for US, internal broker for Chile |
 | 7 | Telegram alerts |
 | 8 | Production hardening |

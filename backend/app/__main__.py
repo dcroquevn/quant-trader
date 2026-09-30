@@ -45,6 +45,8 @@ from app.optimization.store import (
     save_walk_forward,
 )
 from app.optimization.walkforward import run_walk_forward
+from app.projections.analogues import DEFAULT_MAX_DISTANCE
+from app.projections.runner import DEFAULT_HORIZONS, project_symbol
 from app.indicators.registry import compute_features, latest_features
 from app.strategies.registry import available_strategies, build_strategy, strategy_catalog
 from app.strategies.scanner import scan_all, scan_market
@@ -1289,11 +1291,160 @@ def _print_robustness(report) -> None:
 
 
 @app.command("project")
-def project() -> None:
-    """[Phase 5] Historical analogues and statistical scenarios."""
-    _fail_not_implemented(
-        "5", "the historical-analogue search and percentile scenarios (never forecasts)."
+def project(
+    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. NVDA or SQM-B."),
+    market: str = typer.Option(None, "--market", "-m", help="Needed only if ambiguous."),
+    horizons: str = typer.Option(
+        ",".join(str(h) for h in DEFAULT_HORIZONS), "--horizons",
+        help="Comma-separated bar counts to measure ahead.",
+    ),
+    max_distance: float = typer.Option(
+        DEFAULT_MAX_DISTANCE, "--max-distance",
+        help="Similarity ceiling in weighted standard deviations. Looser finds more, "
+             "less similar matches.",
+    ),
+    no_pool: bool = typer.Option(
+        False, "--no-pool", help="Search only this instrument's own history."
+    ),
+    matches: int = typer.Option(0, "--matches", help="Also list this many closest analogues."),
+) -> None:
+    """What followed historically similar situations. Never a forecast.
+
+    Finds past bars whose conditions resembled the current setup and reports the
+    distribution of what happened next. A thin sample yields "Insufficient historical
+    evidence" rather than a median computed from too few points.
+    """
+    setup_logging()
+    init_database()
+    _banner()
+
+    try:
+        horizon_list = tuple(int(h.strip()) for h in horizons.split(",") if h.strip())
+    except ValueError as exc:
+        console.print(f"[red]Could not parse --horizons {horizons!r}: {exc}[/red]")
+        raise typer.Exit(code=2) from exc
+
+    with session_scope() as session:
+        try:
+            result = project_symbol(
+                session, symbol, market,
+                horizons=horizon_list,
+                max_distance=max_distance,
+                pool_across_symbols=not no_pool,
+            )
+        except InsufficientDataError as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+    _print_projection(result, n_matches=matches)
+
+
+def _print_projection(result: dict, *, n_matches: int = 0) -> None:
+    """Print a projection: setup, per-horizon distributions, base rate, caveats."""
+    console.print(
+        Panel(
+            f"[bold]{result['symbol']}[/bold] ({result['market']}, {result['currency']})  "
+            f"[dim]price[/dim] {result['current_price']:,.2f}  "
+            f"[dim]as of[/dim] {result['as_of'][:10]}\n"
+            f"[dim]pooled over[/dim] {len(result['pooled_symbols'])} instruments  "
+            f"[dim]similarity ceiling[/dim] {result['max_distance']}",
+            expand=False,
+        )
     )
+
+    first = next(iter(result["horizons"].values()), None)
+    if first and first.get("setup"):
+        setup = Table(title="Current setup being matched", header_style="bold cyan", show_edge=False)
+        setup.add_column("feature")
+        setup.add_column("value", justify="right")
+        for name, value in sorted(first["setup"].items()):
+            setup.add_row(name, f"{value:,.4f}")
+        console.print(setup)
+
+    for horizon, scenarios in result["horizons"].items():
+        if not scenarios["available"]:
+            console.print(
+                Panel(
+                    f"[yellow]{scenarios['reason']}[/yellow]\n\n"
+                    f"[dim]{scenarios['n_raw_matches']} bars matched, "
+                    f"{scenarios['n_observations']} independent. No projection is shown: a "
+                    "median from too few observations looks exactly as authoritative as a "
+                    "good one.[/dim]",
+                    title=f"[yellow]{horizon} bars ahead[/yellow]",
+                    expand=False,
+                )
+            )
+            continue
+
+        table = Table(
+            title=(
+                f"{horizon} bars ahead -- {scenarios['n_observations']} independent "
+                f"historical situations (from {scenarios['n_raw_matches']} matches)"
+            ),
+            header_style="bold cyan",
+        )
+        for column in ("case", "percentile", "return %", "price", "adverse excursion %"):
+            table.add_column(column, overflow="fold")
+
+        for scenario in scenarios["scenarios"]:
+            colour = {"bear": "red", "base": "white", "bull": "green"}[scenario["label"]]
+            table.add_row(
+                f"[{colour}]{scenario['label'].upper()}[/{colour}]",
+                f"p{scenario['percentile']}",
+                f"[{colour}]{scenario['return_pct']:+.2f}[/{colour}]",
+                "[dim]-[/dim]" if scenario["price"] is None else f"{scenario['price']:,.2f}",
+                _fmt(scenario["adverse_excursion_pct"]),
+            )
+        console.print(table)
+
+        console.print(
+            f"  [dim]{scenarios['positive_share_pct']:.0f}% of those situations were "
+            "followed by a gain.[/dim]"
+        )
+
+        baseline = scenarios.get("baseline") or {}
+        if baseline.get("available"):
+            marker = (
+                "" if scenarios["adds_information"]
+                else "  [red]<-- essentially the same[/red]"
+            )
+            console.print(
+                f"  [dim]base rate over all {baseline['n_bars']:,} bars: median "
+                f"{baseline['median_return_pct']:+.2f}%  "
+                f"p10 {baseline['p10_return_pct']:+.2f}%  "
+                f"p90 {baseline['p90_return_pct']:+.2f}%  "
+                f"(matched {baseline['match_share_pct']:.1f}% of candidates)[/dim]{marker}"
+            )
+            if not scenarios["adds_information"]:
+                console.print(
+                    "  [red]The matching did not isolate anything: these figures restate "
+                    "how these instruments behaved generally over this period, not what "
+                    "this setup preceded. Try a smaller --max-distance.[/red]"
+                )
+
+        for scenario in scenarios["scenarios"]:
+            if scenario["label"] == "base":
+                console.print(f"  [dim]{scenario['basis']}[/dim]")
+
+        if scenarios["caveats"]:
+            console.print(
+                Panel(
+                    "\n".join(f"- {c}" for c in scenarios["caveats"]),
+                    title="[yellow]Caveats[/yellow]",
+                    expand=False,
+                )
+            )
+        console.print()
+
+    if n_matches:
+        for horizon, scenarios in result["horizons"].items():
+            if not scenarios["available"]:
+                continue
+            console.print(f"[dim]Closest analogues at {horizon} bars:[/dim]")
+            break
+
+    console.print(Panel(first["language_note"] if first else "", expand=False))
+    console.print(f"[dim]{result['note']}[/dim]")
 
 
 @app.command("paper")

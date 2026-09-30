@@ -48,6 +48,8 @@ from app.optimization.store import (
     list_optimization_runs,
     list_walk_forward_runs,
 )
+from app.projections.analogues import DEFAULT_MAX_DISTANCE
+from app.projections.runner import DEFAULT_HORIZONS, project_market, project_symbol
 from app.strategies.registry import build_strategy, strategy_catalog
 from app.strategies.scanner import scan_all, scan_market
 
@@ -641,6 +643,78 @@ def walk_forward_run(run_id: int) -> dict[str, Any]:
     if run is None:
         raise HTTPException(status_code=404, detail=f"No walk-forward run with id {run_id}")
     return run
+
+
+@app.get("/api/assets/{symbol}/projection")
+def asset_projection(
+    symbol: str,
+    market: str | None = Query(None),
+    horizons: str = Query(
+        ",".join(str(h) for h in DEFAULT_HORIZONS),
+        description="Comma-separated bar counts to measure ahead.",
+    ),
+    max_distance: float = Query(DEFAULT_MAX_DISTANCE, gt=0, le=5.0),
+    pool: bool = Query(True, description="Pool observations across the market."),
+) -> dict[str, Any]:
+    """What followed historically similar situations for one instrument.
+
+    Never a forecast. Each horizon reports the distribution of outcomes that followed
+    comparable past conditions, the unconditional base rate for comparison, and an
+    ``adds_information`` flag that is False when the two barely differ — a "conditional"
+    distribution that reproduces the base rate carries the authority of a finding without
+    the content.
+
+    A thin sample yields ``available: false`` and the phrase "Insufficient historical
+    evidence" rather than a median computed from too few observations.
+    """
+    try:
+        horizon_list = tuple(int(h.strip()) for h in horizons.split(",") if h.strip())
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=400, detail=f"Could not parse horizons {horizons!r}"
+        ) from exc
+
+    if not horizon_list or any(h < 1 for h in horizon_list):
+        raise HTTPException(status_code=400, detail="Every horizon must be at least 1 bar")
+
+    with session_scope() as session:
+        try:
+            return project_symbol(
+                session, symbol, market,
+                horizons=horizon_list,
+                max_distance=max_distance,
+                pool_across_symbols=pool,
+                log=False,
+            )
+        except KeyError as exc:
+            detail = exc.args[0] if exc.args else f"Unknown symbol {symbol!r}"
+            raise HTTPException(status_code=404, detail=str(detail)) from exc
+        except InsufficientDataError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@app.get("/api/projections")
+def market_projections(
+    market: str = Query("USA"),
+    horizon: int = Query(20, ge=1, le=250),
+    max_distance: float = Query(DEFAULT_MAX_DISTANCE, gt=0, le=5.0),
+) -> dict[str, Any]:
+    """Projections for every instrument in one market at a single horizon.
+
+    Instruments with insufficient evidence are included with ``available: false`` rather
+    than dropped: an absent row reads as "no setup" when it means "not enough comparable
+    history".
+    """
+    with session_scope() as session:
+        try:
+            return project_market(
+                session, market, horizon=horizon, max_distance=max_distance, log=False
+            )
+        except KeyError as exc:
+            detail = exc.args[0] if exc.args else f"Unknown market {market!r}"
+            raise HTTPException(status_code=404, detail=str(detail)) from exc
+        except InsufficientDataError as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
 
 @app.get("/api/limitations")
