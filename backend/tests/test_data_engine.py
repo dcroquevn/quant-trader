@@ -53,10 +53,11 @@ class TestUniverseSync:
         assert ech is not None
 
     def test_stores_data_limitation_notes(self, session) -> None:
+        """A caveat that lives only in the source file never reaches a report."""
         DataEngine(session).sync_universe()
-        latam = repo.get_asset(session, "LTM", "CHILE")
-        assert latam is not None
-        assert "Chapter 11" in latam.notes
+        enel = repo.get_asset(session, "ENIC", "USA")
+        assert enel is not None
+        assert "2016" in enel.notes, "the short-history warning was not persisted"
 
 
 class TestSymbolResolution:

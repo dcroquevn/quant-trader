@@ -57,12 +57,60 @@ class TestMeta:
             assert market["benchmark"]["caveats"], "a benchmark with no caveats is suspicious"
 
     def test_chile_benchmark_is_not_labelled_ipsa(self, client) -> None:
-        """Guards against a future change quietly relabelling the USD proxy."""
-        markets = client.get("/api/markets").json()
-        chile = next(m for m in markets if m["code"] == "CHILE")
+        """Guards against a future change quietly relabelling the USD proxy.
+
+        The comparison moved from the market to the region, because every instrument now
+        trades in New York and a market-keyed benchmark would hand Chilean ADRs the S&P 500.
+        """
+        body = client.get("/api/regions").json()
+        chile = next(r for r in body["regions"] if r["region"] == "Chile")
+        assert chile["benchmark"]["symbol"] == "ECH"
         assert chile["benchmark"]["symbol"] != "IPSA"
         assert chile["benchmark"]["kind"] == "etf_proxy"
         assert any("ipsa" in c.lower() for c in chile["benchmark"]["caveats"])
+
+    def test_the_empty_chile_market_advertises_no_benchmark(self, client) -> None:
+        """Nothing trades in Santiago any more, so the market has nothing to compare to."""
+        markets = client.get("/api/markets").json()
+        chile = next(m for m in markets if m["code"] == "CHILE")
+        assert chile["benchmark"]["available"] is False
+        assert chile["benchmark"]["symbol"] == ""
+
+    def test_regions_are_reported_with_their_currency_caveat(self, client) -> None:
+        """The awkward fact has to reach the dashboard, not just the docstrings."""
+        body = client.get("/api/regions").json()
+        assert {r["region"] for r in body["regions"]} == {
+            "United States", "Chile", "Emerging Asia",
+        }
+        assert "usd" in body["currency_caveat"].lower()
+        for row in body["regions"]:
+            assert row["count"] > 0
+            assert row["benchmark"]["caveats"]
+
+    def test_region_benchmarks_disclose_being_held(self, client) -> None:
+        """All three proxies are in the universe, so a strategy can hold its own yardstick."""
+        body = client.get("/api/regions").json()
+        for row in body["regions"]:
+            if row["benchmark"]["also_tradable"]:
+                joined = " ".join(row["benchmark"]["caveats"]).lower()
+                assert "tradable" in joined
+
+    def test_universe_can_be_filtered_by_region(self, client) -> None:
+        asia = client.get("/api/universe", params={"region": "Emerging Asia"}).json()
+        assert asia["count"] >= 15
+        assert all(a["region"] == "Emerging Asia" for a in asia["assets"])
+        assert all(a["market"] == "USA" for a in asia["assets"]), (
+            "region is not market: these are US listings"
+        )
+
+    def test_unknown_region_is_a_404_not_an_empty_list(self, client) -> None:
+        """An empty list would read as 'no instruments there', not 'no such region'."""
+        assert client.get("/api/universe", params={"region": "Europe"}).status_code == 404
+
+    def test_no_santiago_tickers_are_served(self, client) -> None:
+        body = client.get("/api/universe").json()
+        for asset in body["assets"]:
+            assert not asset["provider_symbol"].endswith(".SN")
 
     def test_providers_are_all_free(self, client) -> None:
         body = client.get("/api/providers").json()

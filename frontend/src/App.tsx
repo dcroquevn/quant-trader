@@ -17,20 +17,31 @@ import { Badge } from './components/ui';
 import { api } from './lib/api';
 import AssetPage from './pages/AssetPage';
 import Backtest from './pages/Backtest';
-import { Portfolio } from './pages/ComingLater';
 import Optimization from './pages/Optimization';
 import DataHealth from './pages/DataHealth';
 import Limitations from './pages/Limitations';
 import Overview from './pages/Overview';
+import Positions from './pages/Positions';
 import Scanner from './pages/Scanner';
 import UniversePage from './pages/UniversePage';
 
-const NAV = [
+/**
+ * `phase` marks a route whose engine does not exist yet, which renders it recessive so the nav
+ * does not promise more than the app can do. Nothing carries it right now -- every route is
+ * backed by something real -- but it is typed explicitly rather than inferred, because Phases 7
+ * and 8 will add routes and an inferred type would drop the field and break the rendering.
+ */
+const NAV: Array<{
+  to: string;
+  label: string;
+  icon: typeof Activity;
+  phase?: number;
+}> = [
   { to: '/overview', label: 'Overview', icon: Activity },
   { to: '/scanner', label: 'Scanner', icon: Radar },
   { to: '/backtest', label: 'Backtest', icon: FlaskConical },
   { to: '/universe', label: 'Universe', icon: List },
-  { to: '/portfolio', label: 'Portfolio', icon: Briefcase, phase: 6 },
+  { to: '/positions', label: 'Positions', icon: Briefcase },
   { to: '/optimization', label: 'Optimization', icon: SlidersHorizontal },
   { to: '/data-health', label: 'Data health', icon: Database },
   { to: '/limitations', label: 'Limitations', icon: AlertTriangle },
@@ -48,7 +59,7 @@ function Header() {
           </div>
           <div>
             <h1 className="text-sm font-bold tracking-tight text-slate-100">QUANT TRADER</h1>
-            <p className="text-2xs text-slate-500">US &amp; Chile equity research</p>
+            <p className="text-2xs text-slate-500">US, Chile &amp; Asia equity research</p>
           </div>
         </div>
 
@@ -107,7 +118,9 @@ export default function App() {
           <Route path="/scanner" element={<Scanner />} />
           <Route path="/backtest" element={<Backtest />} />
           <Route path="/universe" element={<UniversePage />} />
-          <Route path="/portfolio" element={<Portfolio />} />
+          <Route path="/positions" element={<Positions />} />
+          {/* The old path, kept so an existing bookmark does not 404. */}
+          <Route path="/portfolio" element={<Navigate to="/positions" replace />} />
           <Route path="/optimization" element={<Optimization />} />
           <Route path="/asset/:symbol" element={<AssetPage />} />
           <Route path="/data-health" element={<DataHealth />} />
@@ -126,8 +139,10 @@ export default function App() {
         <p className="mx-auto max-w-[1600px] text-2xs leading-relaxed text-slate-600">
           Every figure shown describes <strong className="text-slate-500">past</strong> price
           behaviour. Nothing here is a forecast, and no statistic implies a probability of any
-          future outcome. Phase 1 of 8: data foundation, database and indicators. Strategy,
-          backtesting, optimisation and paper trading are not implemented yet.
+          future outcome. Every instrument is US-listed and priced in USD, so a Chilean or Asian
+          return carries the currency move as well. This software places{' '}
+          <strong className="text-slate-500">no orders</strong> and live routing is not
+          implemented.
         </p>
       </footer>
     </div>

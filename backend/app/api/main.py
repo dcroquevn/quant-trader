@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from typing import Any
 
 from fastapi import FastAPI, HTTPException, Query
@@ -29,14 +29,21 @@ from app.config import get_settings
 from app.core.exceptions import InsufficientDataError
 from app.core.markets import MARKETS
 from app.core.universe import (
+    ALL_REGIONS,
     BENCHMARK_AVAILABILITY,
     DEFAULT_UNIVERSE,
+    LIQUIDITY_CONCERN_USD,
+    REGION_BENCHMARKS,
+    TURNOVER_WINDOW,
     VERIFICATION_DATE,
     find_asset,
+    universe_for_region,
 )
 from app.data.engine import STALE_QUOTE_RUN_LIMIT, DataEngine
 from app.data.provider import Timeframe
 from app.data.registry import provider_cost_table
+from sqlalchemy import select
+
 from app.database.base import init_database, session_scope
 from app.backtesting.runner import resolve_window, run_backtest
 from app.core.exceptions import DataLeakageError
@@ -139,14 +146,78 @@ def markets() -> list[dict[str, Any]]:
     return result
 
 
+@app.get("/api/regions")
+def regions() -> dict[str, Any]:
+    """Exposure groups, their instruments and what each is measured against.
+
+    Separate from ``/api/markets`` on purpose. A market says where an instrument trades --
+    which is New York for all of them, so it groups nothing. A region says what it is
+    exposed to, which is what a portfolio allocates across and what a benchmark has to match.
+    """
+    out = []
+    for region in ALL_REGIONS:
+        specs = universe_for_region(region)
+        benchmark = REGION_BENCHMARKS[region]
+        turnovers = [s.median_turnover_usd for s in specs if s.median_turnover_usd]
+        thin = [s for s in specs if s.is_thinly_traded]
+        out.append(
+            {
+                "region": region,
+                "count": len(specs),
+                "symbols": [s.symbol for s in specs],
+                "n_etfs": sum(1 for s in specs if s.asset_class == "etf"),
+                "thinnest_turnover_usd": min(turnovers) if turnovers else None,
+                "n_thinly_traded": len(thin),
+                "thinly_traded": [s.symbol for s in thin],
+                "benchmark": {
+                    "symbol": benchmark.symbol,
+                    "kind": benchmark.kind,
+                    "currency": benchmark.currency,
+                    "available": benchmark.available,
+                    "caveats": list(benchmark.caveats),
+                    "also_tradable": benchmark.symbol in {s.symbol for s in specs},
+                },
+            }
+        )
+    return {
+        "regions": out,
+        "verification_date": VERIFICATION_DATE,
+        "turnover_window": TURNOVER_WINDOW,
+        "liquidity_threshold_usd": LIQUIDITY_CONCERN_USD,
+        "liquidity_caveat": (
+            "Ten of the 42 instruments trade under "
+            f"{LIQUIDITY_CONCERN_USD / 1_000_000:.0f}M USD a day, including five of the six "
+            "Chilean ones. The backtester models no market impact at any size, so every "
+            "modelled fill on those is optimistic by an amount nothing here measures."
+        ),
+        "currency_caveat": (
+            "Every instrument in every region trades in New York in USD. Outside the United "
+            "States they are ADRs and country ETFs, so a return is the underlying move and "
+            "the currency move together, and nothing here separates them."
+        ),
+    }
+
+
 @app.get("/api/providers")
 def providers() -> dict[str, Any]:
     return {"providers": provider_cost_table(), "all_free": True}
 
 
 @app.get("/api/universe")
-def universe(market: str | None = Query(None)) -> dict[str, Any]:
+def universe(
+    market: str | None = Query(None),
+    region: str | None = Query(None, description="Exposure group; see /api/regions"),
+) -> dict[str, Any]:
     specs = [s for s in DEFAULT_UNIVERSE if market is None or s.market == market.upper()]
+    if region is not None:
+        wanted = region.strip().lower()
+        known = {r.lower(): r for r in ALL_REGIONS}
+        if wanted not in known:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Unknown region {region!r}. Known regions: {list(ALL_REGIONS)}",
+            )
+        specs = [s for s in specs if s.region == known[wanted]]
     return {
         "verification_date": VERIFICATION_DATE,
         "count": len(specs),
@@ -155,9 +226,13 @@ def universe(market: str | None = Query(None)) -> dict[str, Any]:
                 "symbol": s.symbol,
                 "name": s.name,
                 "market": s.market,
+                "region": s.region,
                 "sector": s.sector,
                 "currency": s.currency,
                 "asset_class": s.asset_class,
+                "median_turnover_usd": s.median_turnover_usd,
+                "thinly_traded": s.is_thinly_traded,
+                "liquidity_caveat": s.liquidity_caveat,
                 "provider_symbol": (s.candidates("yfinance") or ("",))[0],
                 "notes": s.notes,
             }
@@ -180,17 +255,189 @@ def coverage(timeframe: str = Query("1D")) -> dict[str, Any]:
             "bars": int(row["bars"]),
             "first_bar": _iso(row["first_bar"]),
             "last_bar": _iso(row["last_bar"]),
+            "declared": bool(row["declared"]),
         }
         for _, row in frame.iterrows()
     ]
+    declared = [r for r in rows if r["declared"]]
+    orphaned = [r for r in rows if not r["declared"]]
     return {
         "timeframe": tf.value,
         "total_bars": sum(r["bars"] for r in rows),
-        "assets_with_data": sum(1 for r in rows if r["bars"] > 0),
-        "assets_without_data": sum(1 for r in rows if r["bars"] == 0),
+        "declared_bars": sum(r["bars"] for r in declared),
+        "assets_with_data": sum(1 for r in declared if r["bars"] > 0),
+        "assets_without_data": sum(1 for r in declared if r["bars"] == 0),
+        "orphaned": {
+            "count": len(orphaned),
+            "bars": sum(r["bars"] for r in orphaned),
+            "symbols": [r["symbol"] for r in orphaned],
+            "note": (
+                "Stored data for instruments no longer in the universe -- the Bolsa de "
+                "Santiago tickers, which cannot be bought through the broker available "
+                "here. Shown rather than hidden so these totals match the database. "
+                "Nothing reads them; `python -m app prune-data` deletes them."
+            ),
+        },
         "rows": rows,
     }
 
+
+
+# --------------------------------------------------------------------------- #
+# Real positions (Phase 6). Read-only: see the module note in the patch history.
+# --------------------------------------------------------------------------- #
+
+
+@app.get("/api/holdings")
+def holdings(include_closed: bool = Query(True)) -> dict[str, Any]:
+    """Positions the user recorded, marked at the latest stored close.
+
+    These are real purchases, not simulated ones. Nothing here was ordered by this software and
+    nothing here can be: the entry prices are what the user reported paying.
+    """
+    from app.portfolio.holdings import list_holdings, realised_performance
+
+    with session_scope() as session:
+        engine = DataEngine(session)
+        rows = []
+        for holding in list_holdings(session, include_closed=include_closed):
+            spec = find_asset(holding.symbol, holding.market)
+            last_price: float | None = None
+            last_bar_on: str | None = None
+            if holding.closed_on is None:
+                bars = engine.load_spec(spec, trim_carried_forward=True)
+                if len(bars):
+                    last_price = float(bars["close"].iloc[-1])
+                    last_bar_on = bars.index[-1].date().isoformat()
+
+            unrealised = (
+                (last_price - holding.entry_price) * holding.quantity
+                if last_price is not None
+                else None
+            )
+            rows.append(
+                {
+                    "id": holding.id,
+                    "symbol": holding.symbol,
+                    "region": holding.region,
+                    "currency": holding.currency,
+                    "quantity": holding.quantity,
+                    "entry_price": holding.entry_price,
+                    "cost_basis": round(
+                        holding.entry_price * holding.quantity + holding.entry_fees, 2
+                    ),
+                    "opened_on": holding.opened_on.date().isoformat(),
+                    "broker": holding.broker,
+                    "strategy": holding.strategy_name,
+                    "stop_price": holding.stop_price,
+                    "take_profit_price": holding.take_profit_price,
+                    "entry_note": holding.entry_note,
+                    "is_open": holding.closed_on is None,
+                    "closed_on": (
+                        holding.closed_on.date().isoformat() if holding.closed_on else None
+                    ),
+                    "exit_price": holding.exit_price,
+                    "last_price": last_price,
+                    "last_bar_on": last_bar_on,
+                    "unrealised_pnl_gross": (
+                        round(unrealised, 2) if unrealised is not None else None
+                    ),
+                    "unrealised_pnl_pct": (
+                        round((last_price / holding.entry_price - 1) * 100, 2)
+                        if last_price is not None
+                        else None
+                    ),
+                    "realised_pnl": holding.pnl,
+                    "realised_pnl_pct": holding.pnl_pct,
+                    "holding_period_days": holding.holding_period_days,
+                    "exit_signal_on": (
+                        holding.exit_signal_on.date().isoformat()
+                        if holding.exit_signal_on
+                        else None
+                    ),
+                    "exit_signal_reason": holding.exit_signal_reason,
+                    "last_checked_on": (
+                        holding.last_checked_on.date().isoformat()
+                        if holding.last_checked_on
+                        else None
+                    ),
+                    "liquidity_caveat": spec.liquidity_caveat,
+                }
+            )
+
+        return {
+            "holdings": rows,
+            "realised": realised_performance(session),
+            "caveats": [
+                "These are real purchases the user reported, not simulated trades. No part of "
+                "this system placed them and no part of it can.",
+                "Unrealised P&L is gross and marked at the latest stored daily close, which is "
+                "not a price anything could be traded at.",
+                "An open position's percentage is on the entry price; a closed one's is on the "
+                "cost basis including the entry fee, so the two are not directly comparable.",
+            ],
+        }
+
+
+@app.get("/api/watch")
+def watch() -> dict[str, Any]:
+    """What each open holding's exit rule says right now. Sends nothing.
+
+    Evaluation only: no notification is sent and no alert is recorded, so refreshing this in a
+    browser cannot consume a dedupe key or spend a Telegram send. The CLI's ``watch`` command and
+    the scheduled job are the only things that notify.
+    """
+    from app.portfolio.watch import check_holdings
+
+    with session_scope() as session:
+        outcomes = check_holdings(session)
+
+    return {
+        "checked_at": datetime.now(timezone.utc).isoformat(),
+        "n_holdings": len(outcomes),
+        "n_triggered": sum(1 for o in outcomes if o.usable and o.exit_triggered),
+        "n_unusable": sum(1 for o in outcomes if not o.usable),
+        "outcomes": [o.to_dict() for o in outcomes],
+        "interpretation": (
+            "A triggered exit rule means a rule this project backtested has fired. It does not "
+            "mean the price will fall, that selling is correct, or that the strategy is right. "
+            "Where sessions_since_trigger is greater than zero the rule fired earlier and a "
+            "backtest would already have closed the position."
+        ),
+    }
+
+
+@app.get("/api/alerts")
+def alerts(limit: int = Query(50, ge=1, le=500)) -> dict[str, Any]:
+    """Every notification attempted, and whether it was delivered.
+
+    Delivery is recorded separately from the condition that caused it, because they fail
+    independently. A run that found an exit and an alert that reached a phone are two facts.
+    """
+    from app.database.models import Alert
+
+    with session_scope() as session:
+        rows = list(
+            session.scalars(select(Alert).order_by(Alert.created_at.desc()).limit(limit))
+        )
+        return {
+            "alerts": [
+                {
+                    "id": alert.id,
+                    "created_at": alert.created_at.isoformat(),
+                    "kind": alert.kind,
+                    "symbol": alert.symbol,
+                    "holding_id": alert.holding_id,
+                    "subject": alert.subject,
+                    "body": alert.body,
+                    "channel": alert.channel,
+                    "status": alert.status,
+                    "failure_reason": alert.failure_reason,
+                }
+                for alert in rows
+            ],
+            "n_failed": sum(1 for a in rows if a.status == "FAILED"),
+        }
 
 # --------------------------------------------------------------------------- #
 # Instrument data
@@ -774,13 +1021,57 @@ def limitations() -> dict[str, Any]:
                 ),
             },
             {
-                "id": "thin_liquidity_chile",
-                "severity": "medium",
-                "title": "Thin liquidity in Chilean names",
+                "id": "thin_liquidity",
+                "severity": "high",
+                "title": "Liquidity is not modelled at any position size",
                 "detail": (
-                    "Several instruments print rarely. Zero-volume bars are flagged "
-                    "rather than dropped, because filling an order on one would be "
-                    "fiction."
+                    "Ten of the 42 instruments trade under 20M USD a day, including five of "
+                    "the six Chilean ones -- CCU at 1.7M and ENIC at 1.8M are the least liquid "
+                    "here, below every Asian country ETF except Thailand (medians over the "
+                    "three years to 2026-09-25). The backtester models no market impact at any "
+                    "size, so every modelled fill on those is optimistic by an amount nothing "
+                    "here measures, and the risk-based position sizing -- calibrated on "
+                    "frictionless fills -- will size a position that could not be filled. Each "
+                    "affected instrument carries its own caveat generated from the measured "
+                    "figure. A median is also a poor guide: it says nothing about depth, "
+                    "spread, or how fast liquidity evaporates in a selloff."
+                ),
+            },
+            {
+                "id": "usd_denominated_exposure",
+                "severity": "high",
+                "title": "Non-US exposure carries an unseparated currency move",
+                "detail": (
+                    "Every tradable instrument is US-listed and priced in USD. The Chilean and "
+                    "Asian ones are ADRs and country ETFs, so a return is the underlying move "
+                    "and the currency move together and nothing here separates them. A Chilean "
+                    "ADR that gained 5% may reflect a 10% local gain against a 5% CLP "
+                    "depreciation, or the reverse, and no figure in this project distinguishes "
+                    "those cases."
+                ),
+            },
+            {
+                "id": "benchmarks_are_held",
+                "severity": "medium",
+                "title": "Every region's benchmark is also tradable",
+                "detail": (
+                    "SPY, ECH and AAXJ are the benchmarks and are also in the universe, so a "
+                    "strategy can hold its own yardstick. When it does, outperformance measures "
+                    "timing rather than selection. Two of the three are also proxies standing "
+                    "in for an index no free source provides: ECH is not the IPSA, and AAXJ is "
+                    "Asia ex-Japan across all capitalisations rather than emerging Asia."
+                ),
+            },
+            {
+                "id": "no_order_routing",
+                "severity": "medium",
+                "title": "Positions are recorded, never placed",
+                "detail": (
+                    "Nothing in this system sends an order, and live routing is not "
+                    "implemented. Recorded holdings are what the user says they bought through "
+                    "their own broker, at the prices they report. The exit watch tells them "
+                    "when a backtested rule fires; acting on it is manual, and a rule firing is "
+                    "not a claim that the price will move."
                 ),
             },
             {

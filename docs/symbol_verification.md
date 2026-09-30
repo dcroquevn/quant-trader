@@ -1,5 +1,15 @@
 # Symbol verification record
 
+> ## Update, 2026-09-30: the Chilean section is now a historical record
+>
+> All 18 Santiago mappings below resolved correctly and the record is kept because it is evidence.
+> They are **no longer in the universe**: resolving was never the binding problem -- none of them
+> could be purchased through the broker available here.
+>
+> The instruments now tracked are listed further down, all US listings resolving to their plain
+> ticker: 6 for Chilean exposure and 21 for emerging Asia. See
+> [chilean_data_sources.md](chilean_data_sources.md) for the full reasoning.
+
 **Verification date: 2026-09-27** · Provider: `yfinance` 1.7.0 (free, no API key)
 
 This file records what was **empirically probed**, not what was assumed. A free
@@ -141,3 +151,74 @@ session.
 | CHILE | 189–322 | ~18–30 | More public holidays, plus genuine no-print days |
 
 Longest consecutive run: 1 session (USA), 3–6 sessions (Chile).
+
+---
+
+## Chilean exposure via US listings — verified 2026-09-27
+
+Probed the same way: ask for data and see what comes back. All resolve to their plain ticker; no
+suffix, no special namespace. Turnover measured separately over the three years to 2026-09-25.
+
+| Symbol | Instrument | Bars (2016→2026) | History begins | Median turnover USD/day |
+|---|---|---|---:|---:|
+| `SQM` | Sociedad Quimica y Minera (ADR) | 2,700 | 2016-01-04 | 57,487,256 |
+| `BSAC` | Banco Santander Chile (ADR) | 2,700 | 2016-01-04 | 6,959,128 |
+| `BCH` | Banco de Chile (ADR) | 2,700 | 2016-01-04 | 6,362,856 |
+| `ENIC` | Enel Chile (ADR) | 2,625 | 2016-04-21 | 1,786,491 |
+| `CCU` | Compania Cervecerias Unidas (ADR) | 2,700 | 2016-01-04 | 1,680,206 |
+| `ECH` | iShares MSCI Chile ETF | 2,700 | 2016-01-04 | 10,510,235 |
+
+Zero carried-forward bars and zero zero-volume bars on all six — the two failures that
+disqualified the `.SN` tickers. `ENIC`'s history begins at the 2016 reorganisation that separated
+Enel Chile from Enel Americas, not earlier.
+
+**Five of the six are below the 20M USD/day threshold** at which this project flags liquidity as
+binding on position size. That was not the expected result and it is recorded here because a later
+reader will otherwise assume a NYSE listing implies liquidity.
+
+`ILF` (iShares Latin America 40) was probed and clean but not adopted: it is regional rather than
+Chilean, so including it would have muddied what "Chile exposure" means.
+
+---
+
+## Emerging Asia via US listings — verified 2026-09-27
+
+31 candidates probed, 30 clean. `GRAB` was rejected for having only 1,461 bars. 21 were adopted;
+the remainder were dropped as redundant (`VWO` ≈ `EEM`, `FXI` ≈ `MCHI`) or too thin to be worth
+the coverage (`EPHE` at 3.8M USD/day, plus `BIDU`, `UMC`, `ASX`, `KB`, `SKM`).
+
+| Symbol | Instrument | Bars | Median turnover USD/day |
+|---|---|---:|---:|
+| `EEM` | iShares MSCI Emerging Markets ETF | 2,700 | 1,240,329,835 |
+| `AAXJ` | iShares MSCI All Country Asia ex Japan ETF | 2,700 | 38,797,939 |
+| `MCHI` | iShares MSCI China ETF | 2,700 | 136,631,462 |
+| `ASHR` | Xtrackers Harvest CSI 300 China A-Shares ETF | 2,700 | 139,259,476 |
+| `INDA` | iShares MSCI India ETF | 2,700 | 257,044,919 |
+| `EWY` | iShares MSCI South Korea ETF | 2,700 | 255,048,505 |
+| `EWT` | iShares MSCI Taiwan ETF | 2,700 | 184,992,866 |
+| `EIDO` | iShares MSCI Indonesia ETF | 2,700 | 9,337,889 |
+| `EWS` | iShares MSCI Singapore ETF | 2,700 | 11,910,076 |
+| `EWM` | iShares MSCI Malaysia ETF | 2,700 | 6,563,187 |
+| `THD` | iShares MSCI Thailand ETF | 2,700 | 2,982,196 |
+| `VNM` | VanEck Vietnam ETF | 2,700 | 8,004,576 |
+| `TSM` | Taiwan Semiconductor (ADR) | 2,700 | 2,746,970,359 |
+| `BABA` | Alibaba Group (ADR) | 2,700 | 1,366,756,873 |
+| `PDD` | PDD Holdings (ADR) | 2,055 | 819,614,369 |
+| `JD` | JD.com (ADR) | 2,700 | 312,934,505 |
+| `NTES` | NetEase (ADR) | 2,700 | 110,012,176 |
+| `INFY` | Infosys (ADR) | 2,700 | 184,494,450 |
+| `HDB` | HDFC Bank (ADR) | 2,700 | 153,504,009 |
+| `IBN` | ICICI Bank (ADR) | 2,700 | 138,536,484 |
+| `SE` | Sea Limited (ADR) | 2,246 | 405,497,448 |
+
+`PDD` begins 2018-07-26 and `SE` 2017-10-20, so both run on a shorter sample than the rest.
+
+**Country coverage was chosen over liquidity** where the two conflicted. Dropping Thailand,
+Malaysia, Indonesia and Vietnam would leave emerging Asia as China, India, Korea and Taiwan — most
+of the market capitalisation, but a much narrower question. The cost is that five of the 21 are
+thin, and each one says so.
+
+**Two overlaps** that the risk engine's sector cap will not catch, because the ETFs are classified
+"Broad Market": `TSM` dominates `EWT` by weight, and `MCHI` and `ASHR` are both labelled "China"
+while holding different markets (Hong Kong/US listings versus mainland A-shares). Holding either
+pair is more correlated than diversified.

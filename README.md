@@ -1,7 +1,13 @@
 # quant-trader
 
-Research, backtesting and paper-trading platform for **US** and **Chilean** equities.
-Runs entirely on your machine, on free data sources, with SQLite. Total cost: **$0**.
+Research, backtesting and position-tracking platform for **US, Chilean and emerging-Asian**
+equity exposure. Runs on your machine or on GitHub's, on free data sources, with SQLite.
+Total cost: **$0**.
+
+Every instrument is **US-listed and priced in USD**, including the Chilean and Asian ones —
+those are ADRs and country ETFs, not local shares. Their returns carry the currency move as
+well as the underlying move, and nothing here separates the two. See
+[Why there are no Santiago tickers](#why-there-are-no-santiago-tickers).
 
 > **Read this first.** This system measures what prices *did*. It does not forecast.
 > Nothing in it establishes that a strategy is profitable, and it is deliberately
@@ -10,7 +16,19 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 > look-ahead bias. Live order routing is **not implemented** — `LIVE_TRADING=true`
 > is rejected at startup rather than ignored.
 
-**Status: Phases 1–5 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics, HTML reports, dashboard, parameter optimisation, walk-forward analysis, robustness testing, historical analogues and statistical scenarios.
+**Status: Phases 1–6 of 8 complete** — data foundation, indicators, strategy engine, scanner,
+backtester, metrics, HTML reports, dashboard, parameter optimisation, walk-forward analysis,
+robustness testing, historical analogues, statistical scenarios, real-position tracking and
+Telegram alerts.
+
+Phase 6 is built for a **manual workflow**: you buy through your own broker's app, record what
+you bought, and the daily check tells you when the strategy's exit rule fires on it. This
+software has no broker connection and places no orders. See
+[Tracking real positions](#tracking-real-positions).
+
+It can run daily on GitHub Actions so your computer does not have to be on —
+[docs/deployment.md](docs/deployment.md), including the trade-off that decides whether you get a
+public dashboard or private alerts.
 
 Free Chilean data sources were surveyed separately; see
 [docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
@@ -21,7 +39,9 @@ what turned out not to.
 ## Table of contents
 
 - [What works today](#what-works-today)
+- [Why there are no Santiago tickers](#why-there-are-no-santiago-tickers)
 - [Quick start](#quick-start)
+- [Tracking real positions](#tracking-real-positions)
 - [Commands](#commands)
 - [Architecture](#architecture)
 - [Data sources and cost](#data-sources-and-cost)
@@ -35,8 +55,9 @@ what turned out not to.
 
 | Capability | Status |
 |---|---|
-| Free data providers for US and Chile, behind one abstraction | Done |
-| Symbol mapping with empirical resolution (18/18 Chilean names verified) | Done |
+| Free data providers behind one abstraction | Done |
+| Symbol mapping with empirical resolution, verified against live responses | Done |
+| 42 instruments across three exposure regions, all purchasable | Done |
 | SQLite database, 13 tables, PostgreSQL-ready schema | Done |
 | Incremental downloads, gap detection, stale-quote detection | Done |
 | 40 technical indicators, all verified free of look-ahead bias | Done |
@@ -57,10 +78,88 @@ what turned out not to.
 | Six robustness checks, including fragility and cost-breakeven | Done |
 | Historical analogues with overlap correction and a base-rate comparison | Done |
 | Percentile scenarios that refuse to be forecasts | Done |
-| Paper trading | Phase 6 |
+| Recording real positions bought through your own broker | Done |
+| Daily exit-rule watch, replaying the backtester's own logic | Done |
+| Telegram alerts, with delivery recorded separately from the trigger | Done |
+| Real P&L on closed positions, reported with how little it establishes | Done |
+| Self-contained HTML digest, publishable to GitHub Pages | Done |
+| Scheduled daily run on GitHub Actions | Done |
+| Broker order routing | **Not implemented, not planned** |
 
 Commands belonging to later phases are registered and **refuse to run**, naming
 the phase they belong to. Nothing prints a fabricated result.
+
+---
+
+## Why there are no Santiago tickers
+
+This project used to track 18 Bolsa de Santiago instruments — `SQM-B.SN`, `FALABELLA.SN` and so
+on. All 18 resolved correctly on Yahoo and all 18 were removed. Two reasons, in order of
+importance:
+
+**They could not be bought.** The broker available here lists US instruments only, so every
+scan, backtest and signal on those names produced analysis nobody could act on.
+
+**Their data was the worst in the project.** Measured 2026-09-27: all 18 ended in flat
+zero-volume bars the vendor had carried forward, several reported no volume on 85% of recent
+sessions, and the strategy lost money on them (−19.9%, Sharpe −0.61).
+
+What replaced them is Chilean *exposure* that can actually be bought: the NYSE ADRs `SQM`,
+`BSAC`, `BCH`, `ENIC` and `CCU`, plus the country ETF `ECH`. All six have full history since
+2016, zero carried-forward bars and zero zero-volume bars — clean exactly where the local
+tickers were broken.
+
+**The honest costs of the swap**, all three:
+
+1. **USD denomination.** A return on `SQM` is the Chilean move *and* the CLP/USD move. Nothing
+   here separates them.
+2. **Five companies, not eighteen.** A much narrower slice of the Chilean market.
+3. **They are thin.** This one was a surprise and it is the serious one. Measured over the three
+   years to 2026-09-25, five of the six trade under 20M USD a day, and `CCU` (1.7M) and `ENIC`
+   (1.8M) are the *least liquid instruments anywhere in this project* — below every Asian country
+   ETF except Thailand. Only `SQM` (57M) is comfortable. "NYSE-listed" suggested liquidity and
+   the measurement said otherwise.
+
+The `.SN` provider machinery is still present and still tested, so someone with a Santiago broker
+could put them back. A test fails if anyone does it by accident.
+
+### Emerging Asia
+
+21 instruments, screened on the same criteria: regional ETFs (`AAXJ`, `EEM`), country ETFs
+(`MCHI`, `ASHR`, `INDA`, `EWY`, `EWT`, `EIDO`, `EWS`, `EWM`, `THD`, `VNM`) and large ADRs (`TSM`,
+`BABA`, `PDD`, `JD`, `NTES`, `INFY`, `HDB`, `IBN`, `SE`). 30 of 31 candidates passed the data
+checks; `GRAB` was rejected for having only 1,461 bars.
+
+Country coverage was chosen over liquidity where the two conflicted. Dropping Thailand, Malaysia,
+Indonesia and Vietnam would leave "emerging Asia" as China, India, Korea and Taiwan — most of the
+market capitalisation, but a much narrower question. The cost is that five of the 21 are thin, and
+each one says so.
+
+Two overlaps worth knowing: `TSM` dominates `EWT` by weight, and `MCHI` and `ASHR` are both
+"China" but hold different markets. Holding either pair is more correlated than diversified, and
+the risk engine's sector cap will not catch it because the ETFs are classified "Broad Market".
+
+Chinese ADRs also carry a risk the others do not: they are claims on offshore holding structures
+rather than direct equity, and their listing status has been politically contingent more than
+once. That is not modellable, so it is in no number here.
+
+### Market versus region
+
+Because every instrument now trades in New York, `market` stopped distinguishing anything useful
+and a second field was added:
+
+- **`market`** is *where it trades* — currency, session hours, holiday calendar, cost model.
+- **`region`** is *what it is exposed to* — portfolio grouping, and **which benchmark it is
+  measured against**.
+
+That last part is why the distinction is load-bearing. A benchmark keyed on market would have
+compared an emerging-Asia strategy against the S&P 500 and reported the difference as skill. Each
+region has its own: SPY for the US, ECH for Chile, AAXJ for Asia — and all three are also in the
+tradable universe, so a strategy can hold its own yardstick. That caveat travels with every
+number derived from them.
+
+The `CHILE` market definition survives with an empty universe. Its calendar, currency and cost
+model are correct and verified, and deleting them would lose the work.
 
 ---
 
@@ -139,15 +238,78 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app robustness` | Stress-test one configuration |
 | `python -m app runs` | List stored searches and studies |
 | `python -m app project SYMBOL` | What followed similar historical situations |
+| `python -m app buy SYMBOL` | **Record** a purchase you already made. Orders nothing |
+| `python -m app sell ID` | **Record** a sale you already made, and see the real P&L |
+| `python -m app holdings` | Positions you have recorded, marked at the latest close |
+| `python -m app watch` | Check every open position's exit rule and alert on what fired |
+| `python -m app alerts` | Every notification attempted, and whether it was delivered |
+| `python -m app digest` | Self-contained HTML digest of the universe. No server needed |
+| `python -m app prune-data` | Delete stored bars for instruments no longer in the universe |
 | `python -m app serve` | Run the API |
 
-Useful flags: `--market USA|CHILE`, `--symbols AAPL,SQM-B`, `--timeframe 1D|1H|15m|5m`,
+Useful flags: `--market USA`, `--symbols AAPL,SQM,TSM`, `--timeframe 1D|1H|15m|5m`,
 `--start`/`--end`, `--full`.
 
-**Registered but refusing to run:** `paper` (Phase 6).
+**Registered but refusing to run:** `paper` (simulated order routing — Phase 7). The manual
+workflow in `buy`/`sell`/`watch` is what Phase 6 delivered instead, because it matches how you
+actually trade.
 
 Backtest flags: `--split full|train|validation|test`, `--strategy`, `--symbols`,
 `--start`/`--end`, `--capital`, `--finalising`.
+
+---
+
+## Tracking real positions
+
+The workflow is manual on both ends, because that is how you actually trade: you buy through your
+broker's app, and this software watches what you bought.
+
+```bash
+# 1. The scanner says the entry conditions hold on SQM.
+python -m app scan --action BUY
+
+# 2. You buy it yourself, in your broker's app. This software does not and cannot.
+
+# 3. Record it. Stop and target default to the strategy's own levels as of that date,
+#    so the watch checks the rule the backtest actually measured.
+python -m app buy SQM --qty 50 --price 47.30 --on 2026-09-15 --broker fintual
+
+# 4. Every day (or let GitHub Actions do it):
+python -m app watch
+
+# 5. When the rule fires you get a Telegram message. If you decide to sell, record that:
+python -m app sell 1 --price 51.20 --fees 1.20
+```
+
+**What the watch actually does.** It rebuilds the `Position` the backtester would be holding,
+replays every bar since your purchase through the same `update_marks`, `advance_trailing_stop` and
+`_resolve_price_exit`, and **stops at the first bar that triggers**. Reusing the backtester's own
+code rather than reimplementing it is deliberate: an alert firing on slightly different logic than
+the backtest measured is an alert with no evidence behind it.
+
+It reports *when* the rule fired, not just whether it fires today. An early version checked only
+the latest bar, and a position whose target was crossed months earlier was reported as triggering
+now — a position a backtest would have closed a year before. The alert says "fired on 2026-07-13,
+55 sessions ago" and states outright that a backtest considers it already exited.
+
+**What it refuses to do.** If the newest stored bar is more than five days old, the watch will not
+report "no exit signal". Silence and ignorance look identical on a dashboard, and that is the most
+dangerous output this feature could produce. It says the data is stale and names the position as
+unwatched.
+
+**What an alert means.** That a rule this project backtested has triggered. Not that the price
+will fall, not that selling is correct, not that the strategy is right. The message says this in
+those words, because a notification is read in three seconds and whatever it implies is what gets
+acted on.
+
+**What the P&L means.** The figures on a closed position are the only ones in this project that
+are not modelled — they come from the prices you report. They are also reported with a statement
+of how little they establish: four real trades are a smaller sample than any backtest here, and
+real money makes a result *feel* like proof in a way a backtest does not.
+
+Alerts go through Telegram (free, a bot token from @BotFather) or print to the console. Delivery
+is recorded separately from the trigger, because they fail independently — `python -m app alerts`
+shows which messages actually arrived.
 
 ---
 
@@ -479,7 +641,22 @@ bankrupt or were acquired are absent, so any backtest over this universe is meas
 only on survivors and is **optimistic by an unknown amount**. Free data cannot fix
 this. It is recorded on every backtest row and printed in every report.
 
-### 2. The IPSA needs a free Banco Central account (medium)
+### 2. Liquidity is not modelled at all (high)
+
+Ten of the 42 instruments trade under 20M USD a day, including five of the six Chilean ones:
+`CCU` 1.7M, `ENIC` 1.8M, `THD` 3.0M, `BCH` 6.4M, `EWM` 6.6M, `BSAC` 7.0M, `VNM` 8.0M, `EIDO`
+9.3M, `ECH` 10.5M, `EWS` 11.9M (medians, three years to 2026-09-25).
+
+The backtester models **no market impact at any position size**. A position large enough to matter
+in `CCU` would move the price, and no figure in this project captures by how much. Every modelled
+fill on those ten is optimistic by an unmeasured amount, and the backtester's risk-based position
+sizing — calibrated on frictionless fills — will happily size a position that could not be filled.
+
+Each affected instrument generates its own caveat from the measured figure (`AssetSpec.liquidity_caveat`),
+which appears in exit alerts, the digest, the CLI and the API. A median is also a poor guide: it
+says nothing about depth, spread, or how fast liquidity evaporates in a selloff.
+
+### 3. The IPSA needs a free Banco Central account (medium)
 
 Yahoo serves nothing for the Chilean index: six spellings were probed on 2026-09-27
 (`^IPSA`, `IPSA.SN`, `^SPIPSA`, `^SPCLXIPSA`, `^CLX`, `IPSA`) and **all returned zero
@@ -489,15 +666,16 @@ The **Banco Central de Chile API BDE** does carry it, free of charge, after a fr
 registration (email + password — no card, no tier). Set `BCCH_USER` and
 `BCCH_PASSWORD` in `.env`; see [docs/chilean_data_sources.md](docs/chilean_data_sources.md).
 
-Until you do, the Chilean benchmark falls back to **`ECH`**, a USD-denominated
-NYSE-listed ETF — so a CLP strategy compared against it is partly being measured on
-currency moves it never made. The code refuses to call ECH "IPSA", and a test
-enforces that.
+The Chilean *region* is benchmarked against **`ECH`** instead. Since the Chilean instruments are
+now USD-denominated ADRs, that comparison is at least currency-consistent — but both sides carry
+the CLP/USD move and neither isolates the Chilean equity move from it. ECH is also tradable here,
+so a strategy can hold its own benchmark. The code refuses to call ECH "IPSA", and a test enforces
+that.
 
-### 3. Yahoo's Chilean feed stalled at Fiestas Patrias (high)
+### 4. Yahoo's Chilean feed stalled at Fiestas Patrias (high — historical)
 
-**Measured on the downloaded data, 2026-09-27: all 18 Chilean instruments end in flat
-zero-volume bars.** All 15 US instruments are clean.
+This is why the Santiago tickers are gone rather than a live problem. **Measured 2026-09-27: all 18
+ended in flat zero-volume bars.** All 15 US instruments were clean.
 
 | Instrument | Last real print | Fabricated bars after it |
 |---|---|---|
@@ -554,12 +732,23 @@ least visible.
 
 ### 7. Instrument-specific caveats
 
-- **LTM (LATAM Airlines)** — Chapter 11 completed 2022 with massive dilution. Pre- and
-  post-2022 prices are not comparable.
-- **ITAUCL** — repeated mergers (Corpbanca → Itaú Corpbanca → Itaú Chile).
-- **MALLPLAZA** — history begins 2018-07-27, not at the 2016 IPO.
-- **ENELCHILE** — history begins 2016-04-22, after the Enel Chile / Enel Americas split.
-- **SQM-B** — Series B is the liquid local line; Series A trades separately.
+Shorter history than the rest of the universe, so a backtest starting in 2016 runs these on a
+smaller sample than everything beside them:
+
+- **ENIC** — begins 2016-04-21, after the Enel Chile / Enel Americas split.
+- **SE** — begins 2017-10-20 (NYSE listing).
+- **PDD** — begins 2018-07-26.
+
+Correlation the sector cap will not catch, because the ETFs are classified "Broad Market":
+
+- **TSM and EWT** — TSM dominates EWT by weight. Holding both is one bet, not two.
+- **MCHI and ASHR** — both labelled "China", holding different markets (Hong Kong/US listings
+  versus mainland A-shares).
+
+Structural risk that is in no number here:
+
+- **Chinese ADRs** (BABA, PDD, JD, NTES) — claims on offshore holding structures rather than
+  direct equity, with a listing status that has been politically contingent more than once.
 
 ### 8. Shallow intraday history (low)
 
@@ -624,12 +813,19 @@ double. Notable test groups:
 | **3** | **Dashboard — complete** |
 | **4** | **Optimisation, objective function, walk-forward, robustness — complete** |
 | **5** | **Projection engine and historical analogues — complete** |
-| 6 | Paper trading — Alpaca for US, internal broker for Chile |
-| 7 | Telegram alerts |
+| **6** | **Real-position tracking, exit watch, Telegram alerts, scheduled runs — complete** |
+| 7 | Simulated order routing (`paper`), portfolio-level allocation across regions |
 | 8 | Production hardening |
 
-Live trading is **not** on this roadmap as an enabled feature. A `BrokerAdapter`
-interface exists so one can be added deliberately later.
+Phase 6 was delivered as **manual position tracking rather than broker-connected paper trading**,
+which is a deliberate change from the original plan. The reason is that the original plan solved a
+problem that did not exist: orders are placed by hand through a broker's app, so a simulated order
+router would have produced a second set of fictional positions alongside the real ones. What was
+needed was a record of the real ones and an alert when the exit rule fires — which is what was
+built.
+
+Live trading is **not** on this roadmap as an enabled feature. A `BrokerAdapter` interface exists
+in `app/execution` with nothing behind it, so one can be added deliberately later.
 
 ---
 

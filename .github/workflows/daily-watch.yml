@@ -1,0 +1,128 @@
+# The daily check, running on GitHub's machines so yours does not have to be on.
+#
+# WHAT THIS DOES
+#   1. Restores the SQLite database from the Actions cache.
+#   2. Downloads whatever bars are new since the last run.
+#   3. Runs the watch against your recorded positions.
+#   4. Sends a Telegram message for every exit rule that fired, and writes a job summary you can
+#      read in the GitHub mobile app.
+#   5. Saves the database back to the cache.
+#
+# IMPORTANT: USE A PRIVATE REPOSITORY FOR THIS WORKFLOW
+#   Your positions -- symbols, sizes, entry prices -- live in the cached database and appear in
+#   the job summary. In a public repository the job summary is world-readable. The digest
+#   workflow is the one built to be public; this one is not.
+#
+# COST
+#   GitHub bills Actions minutes on private repositories against a monthly allowance and bills
+#   nothing on public ones. I have NOT verified the current allowance or whether it is enough for
+#   a daily run of this length -- check Settings > Billing on your own account before relying on
+#   it. This run takes roughly two to four minutes, so a daily schedule is on the order of 60-120
+#   minutes a month.
+#
+# THE CACHE IS NOT STORAGE
+#   GitHub evicts cache entries that have not been read for a week, and caps total cache size per
+#   repository. If the cache is evicted, the database comes back empty: bars re-download in a few
+#   minutes, but YOUR RECORDED POSITIONS ARE GONE. That is the one thing here that cannot be
+#   rebuilt from a provider.
+#
+#   So: keep your own copy. `data/quant_trader.db` on your machine is the record; this cache is a
+#   convenience. Re-run `python -m app buy ...` after an eviction, or commit the database to a
+#   private repository if you would rather not.
+
+name: Daily watch
+
+on:
+  schedule:
+    # 21:30 UTC on weekdays: after the US close (20:00 or 21:00 UTC depending on daylight
+    # saving), with enough margin that the provider has settled the day's final bar. Cron in
+    # Actions is not punctual -- a scheduled job can start 10-30 minutes late under load, and
+    # occasionally not at all. Treat a missing day as normal, not as a bug.
+    - cron: '30 21 * * 1-5'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Evaluate without sending or recording anything'
+        type: boolean
+        default: false
+
+# Two runs sharing one SQLite file would interleave writes. Queue instead.
+concurrency:
+  group: quant-trader-watch
+  cancel-in-progress: false
+
+jobs:
+  watch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # The key changes daily so each run writes a fresh entry; restore-keys falls back to the
+      # most recent previous one. A single fixed key would never be updated, because
+      # actions/cache does not overwrite a key that already exists.
+      - name: Restore database
+        id: db-cache
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: quant-trader-db-${{ github.run_id }}
+          restore-keys: |
+            quant-trader-db-
+
+      - name: Report what was restored
+        run: |
+          if [ -f data/quant_trader.db ]; then
+            echo "Database restored: $(du -h data/quant_trader.db | cut -f1)"
+          else
+            echo "::warning::No cached database. Bars will re-download, but any recorded"
+            echo "::warning::positions are gone -- re-add them with 'python -m app buy'."
+          fi
+
+      - name: Download new bars
+        env:
+          PYTHONPATH: backend
+        run: python -m app download-data
+
+      - name: Watch positions
+        env:
+          PYTHONPATH: backend
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED: 'true'
+          # Stated explicitly rather than relying on the defaults in config.py. This workflow
+          # runs unattended, so the setting that must never drift is the one written down here.
+          PAPER_TRADING: 'true'
+          LIVE_TRADING: 'false'
+        run: |
+          python -m app watch --summary ${{ inputs.dry_run && '--dry-run' || '' }}
+
+      # Runs even when the watch failed, so a crash still leaves the newly downloaded bars
+      # cached rather than re-fetching them tomorrow.
+      - name: Keep the database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: quant-trader-db-${{ github.run_id }}
+
+      - name: Upload the database
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: quant-trader-db-${{ github.run_number }}
+          path: data/quant_trader.db
+          retention-days: 14
+          if-no-files-found: warn
+        # An artifact you can download and drop into your local data/ directory. This is the
+        # escape hatch for a cache eviction: it is the only copy of your positions that outlives
+        # one, and it is why retention is set rather than left at the default.

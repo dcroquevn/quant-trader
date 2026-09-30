@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 import pandas as pd
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
@@ -46,7 +47,7 @@ from app.core.universe import (
 from app.data.provider import DataProvider, Timeframe
 from app.data.registry import provider_for_market
 from app.database import repository as repo
-from app.database.models import Asset
+from app.database.models import Asset, Bar
 
 logger = get_logger(__name__)
 
@@ -620,8 +621,56 @@ class DataEngine:
             )
 
     def coverage(self, timeframe: "str | Timeframe" = Timeframe.D1) -> pd.DataFrame:
-        """Per-asset coverage table: what is actually stored right now."""
-        return repo.coverage_report(self._session, Timeframe.parse(timeframe).value)
+        """Per-asset coverage table: what is actually stored right now.
+
+        A ``declared`` column says whether each row is still in the universe. Rows can
+        outlive their specs -- the 18 Bolsa de Santiago tickers left behind roughly 47,000
+        bars when they were removed -- and this report shows the database as it is rather
+        than as the universe says it should be. Filtering them out silently would make the
+        totals disagree with the stored data, which is the one thing a coverage report must
+        not do.
+        """
+        frame = repo.coverage_report(self._session, Timeframe.parse(timeframe).value)
+        declared = {(s.symbol, s.market) for s in DEFAULT_UNIVERSE + BENCHMARKS}
+        frame["declared"] = [
+            (row.symbol, row.market) in declared for row in frame.itertuples()
+        ]
+        return frame
+
+    def undeclared_assets(self) -> list[tuple[str, str]]:
+        """Stored ``(symbol, market)`` pairs with no spec in the current universe.
+
+        Read-only. Deleting them is :meth:`drop_undeclared_assets`, kept separate because
+        the Santiago data is the evidence behind the findings in
+        ``docs/chilean_data_sources.md`` and losing it to a convenience default would be a
+        bad trade.
+        """
+        declared = {(s.symbol, s.market) for s in DEFAULT_UNIVERSE + BENCHMARKS}
+        stored = self._session.execute(
+            select(Asset.symbol, Asset.market_code)
+        ).all()
+        return sorted((sym, mkt) for sym, mkt in stored if (sym, mkt) not in declared)
+
+    def drop_undeclared_assets(self) -> dict[str, int]:
+        """Delete every stored asset with no spec, and its bars. Returns what went.
+
+        Irreversible: the bars are gone and only a re-download brings them back, which for a
+        delisted or renamed instrument may not be possible at all. The caller is responsible
+        for having asked.
+        """
+        removed = {"assets": 0, "bars": 0}
+        for symbol, market in self.undeclared_assets():
+            row = repo.get_asset(self._session, symbol, market)
+            if row is None:
+                continue
+            bars = self._session.scalar(
+                select(func.count()).select_from(Bar).where(Bar.asset_id == row.id)
+            )
+            self._session.execute(delete(Bar).where(Bar.asset_id == row.id))
+            self._session.execute(delete(Asset).where(Asset.id == row.id))
+            removed["assets"] += 1
+            removed["bars"] += int(bars or 0)
+        return removed
 
     def load(
         self,

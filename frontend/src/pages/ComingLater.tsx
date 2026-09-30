@@ -5,6 +5,10 @@ import { Card } from '../components/ui';
 /**
  * Placeholder for a route the brief specifies but whose engine does not exist yet.
  *
+ * Currently unused: every route in the nav is now backed by something real. Kept because Phases 7
+ * and 8 will add routes again, and because the rule it encodes is worth not relearning -- see the
+ * note about empty states below.
+ *
  * These pages exist rather than being omitted because the routes are part of the agreed
  * design, and a 404 would read as a bug. What they must not do is render a plausible
  * empty state: a portfolio page showing "$0.00 / 0.00% / 0 positions" looks like a flat
@@ -84,32 +88,5 @@ export function ComingLater({
         </div>
       </Card>
     </div>
-  );
-}
-
-export function Portfolio() {
-  return (
-    <ComingLater
-      title="Portfolio"
-      phase="6"
-      summary={
-        'Live cash, equity, open positions and trade history for the paper-trading account, ' +
-        'separated by market so a USD book and a CLP book are never summed.'
-      }
-      blockedBy={
-        'Blocked on the paper broker, not on this page. There is no portfolio yet because ' +
-        'nothing has traded: paper execution arrives in Phase 6, using Alpaca for US ' +
-        'equities and an internal broker for Chile, since no free Chilean execution API ' +
-        'was found.'
-      }
-      willShow={[
-        'Cash and equity per market, never combined across currencies',
-        'Open positions with entry price, current mark, unrealised P&L and the binding stop',
-        'Daily P&L and drawdown against the account high-water mark',
-        'Exposure by market and by sector, against the configured risk limits',
-        'Full trade history with entry and exit reasons',
-      ]}
-      cli={'python -m app paper\n  → Not implemented yet. Belongs to Phase 6.'}
-    />
   );
 }

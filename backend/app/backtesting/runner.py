@@ -22,6 +22,8 @@ from typing import Any
 import pandas as pd
 from sqlalchemy.orm import Session
 
+from collections.abc import Sequence
+
 from app.backtesting.engine import BacktestConfig, BacktestResult, Backtester
 from app.backtesting.metrics import (
     compare_to_benchmark,
@@ -32,7 +34,13 @@ from app.config import get_settings
 from app.core.exceptions import DataLeakageError, InsufficientDataError
 from app.core.logging import get_logger
 from app.core.markets import get_market
-from app.core.universe import benchmark_for_market, find_asset, universe_for_market
+from app.core.universe import (
+    benchmark_for_market,
+    benchmark_for_region,
+    find_asset,
+    regions_of,
+    universe_for_market,
+)
 from app.data.engine import DataEngine
 from app.data.provider import Timeframe
 from app.indicators.registry import MIN_BARS_FOR_FULL_FEATURES, compute_features
@@ -272,7 +280,7 @@ def run_backtest(
 
     if include_benchmark:
         result.benchmark_metrics = _benchmark(
-            session, market_spec.code, result, timeframe
+            session, market_spec.code, result, timeframe, symbols=list(frames)
         )
         result.metrics["vs_benchmark"] = compare_to_benchmark(
             result.metrics, result.benchmark_metrics
@@ -319,17 +327,45 @@ def _benchmark(
     market: str,
     result: BacktestResult,
     timeframe: "str | Timeframe",
+    symbols: "Sequence[str] | None" = None,
 ) -> dict[str, Any]:
-    """Buy-and-hold benchmark metrics, with the market's caveats attached."""
+    """Buy-and-hold benchmark metrics, with the comparison's caveats attached.
+
+    The benchmark follows the *exposure* that was traded, not the market. Every instrument
+    here is US-listed, so keying on market would measure an emerging-Asia strategy against
+    the S&P 500 and read the gap as skill.
+
+    A run spanning more than one region gets no benchmark. Blending SPY, ECH and AAXJ by
+    position weight would produce a number with no honest interpretation, so the report names
+    the regions and declines instead.
+    """
+    regions = regions_of(symbols) if symbols else ()
+
+    if len(regions) > 1:
+        return {
+            "available": False,
+            "reason": (
+                "this run traded more than one exposure group ("
+                + ", ".join(regions)
+                + "), and each has a different benchmark. A blended comparison would not "
+                "mean anything; run one region at a time to get one."
+            ),
+            "regions": list(regions),
+        }
+
     try:
-        spec = benchmark_for_market(market)
+        spec = benchmark_for_region(regions[0]) if regions else benchmark_for_market(market)
     except KeyError as exc:
         return {"available": False, "reason": str(exc)}
 
     if not spec.available or not spec.symbol:
         return {
             "available": False,
-            "reason": f"no benchmark data source for {market}",
+            "reason": (
+                f"no benchmark data source for {regions[0]}"
+                if regions
+                else f"no benchmark data source for {market}"
+            ),
             "caveats": list(spec.caveats),
         }
 

@@ -1,5 +1,29 @@
 # Free Chilean data sources: what exists, what does not
 
+> ## Update, 2026-09-30: the Santiago tickers were removed
+>
+> Everything below still holds as research. What changed is what was done about it.
+>
+> The 18 Bolsa de Santiago instruments are **no longer in the universe**, for a reason this
+> document did not consider: **they could not be bought.** The broker available here lists US
+> instruments only, so every finding below was about data feeding analysis nobody could act on.
+> The data quality problems documented here were the second reason, not the first.
+>
+> Chilean exposure is now taken through US-listed instruments that *can* be bought: the NYSE ADRs
+> `SQM`, `BSAC`, `BCH`, `ENIC` and `CCU`, plus the country ETF `ECH`. All six have full history
+> since 2016, zero carried-forward bars and zero zero-volume bars -- clean exactly where the local
+> tickers were broken.
+>
+> **What this did not fix.** Measured over the three years to 2026-09-25, five of the six trade
+> under 20M USD a day. `CCU` (1.7M) and `ENIC` (1.8M) are the least liquid instruments anywhere in
+> this project. "NYSE-listed" suggested liquidity and the measurement said otherwise. The `.SN`
+> tickers were illiquid too, so this is not a regression -- but it is not the improvement the swap
+> appeared to be either.
+>
+> **The Banco Central finding is unaffected**, and still the only free route to the IPSA. The
+> `.SN` provider machinery is also still present and still tested, so someone with a Santiago
+> broker could put those instruments back.
+
 **Research date: 2026-09-27.** Endpoints were probed directly rather than taken from
 documentation, because several of these services describe capabilities their public
 interfaces do not actually expose.

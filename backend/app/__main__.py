@@ -11,6 +11,8 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+import os
+
 import typer
 from rich.console import Console
 from rich.panel import Panel
@@ -22,16 +24,21 @@ from app.core.exceptions import DataLeakageError, InsufficientDataError
 from app.core.logging import get_logger, setup_logging
 from app.core.markets import MARKETS, all_market_codes
 from app.core.universe import (
+    ALL_REGIONS,
     BENCHMARK_AVAILABILITY,
-    CHILE_UNIVERSE,
     DEFAULT_UNIVERSE,
-    USA_UNIVERSE,
+    LIQUIDITY_CONCERN_USD,
+    REGION_BENCHMARKS,
+    TURNOVER_WINDOW,
     VERIFICATION_DATE,
     find_asset,
+    universe_for_region,
 )
 from app.data.engine import DataEngine
 from app.data.provider import Timeframe
 from app.data.registry import provider_cost_table, provider_for_market
+from sqlalchemy import select
+
 from app.database.base import init_database, session_scope
 from app.backtesting.runner import resolve_window, run_backtest
 from app.optimization.objective import PRESETS, ObjectiveWeights
@@ -167,26 +174,68 @@ def providers() -> None:
 def universe() -> None:
     """Show the configured universe and each market's benchmark."""
     table = Table(title="Universe", header_style="bold cyan")
-    for column in ("market", "symbol", "name", "sector", "currency", "provider symbol"):
+    columns = ("region", "symbol", "name", "sector", "class", "median turnover USD", "ticker")
+    for column in columns:
         table.add_column(column, overflow="fold")
 
     for spec in DEFAULT_UNIVERSE:
         candidates = spec.candidates("yfinance")
+        if spec.median_turnover_usd is None:
+            turnover = "[red]unmeasured[/red]"
+        elif spec.is_thinly_traded:
+            turnover = f"[yellow]{spec.median_turnover_usd:,.0f}[/yellow]"
+        else:
+            turnover = f"{spec.median_turnover_usd:,.0f}"
         table.add_row(
-            spec.market,
+            spec.region,
             spec.symbol,
             spec.name,
             spec.sector,
-            spec.currency,
+            spec.asset_class,
+            turnover,
             candidates[0] if candidates else "[red]none[/red]",
         )
     console.print(table)
+
+    counts = ", ".join(f"{len(universe_for_region(r))} {r}" for r in ALL_REGIONS)
+    console.print(f"[dim]{counts}. Symbol mappings verified {VERIFICATION_DATE}.[/dim]")
     console.print(
-        f"[dim]{len(USA_UNIVERSE)} US + {len(CHILE_UNIVERSE)} Chilean instruments. "
-        f"Symbol mappings verified {VERIFICATION_DATE}.[/dim]\n"
+        "[yellow]Every instrument above trades in New York in USD.[/yellow] The Chilean and "
+        "Asian ones are ADRs and country ETFs, so their returns carry the currency move as "
+        "well as the underlying move, and nothing here separates the two."
+    )
+    thin = [s for s in DEFAULT_UNIVERSE if s.is_thinly_traded]
+    if thin:
+        console.print(
+            f"[yellow]{len(thin)} instrument(s) trade under "
+            f"{LIQUIDITY_CONCERN_USD / 1_000_000:.0f}M USD a day[/yellow] (median, "
+            f"{TURNOVER_WINDOW}): "
+            + ", ".join(f"{s.symbol} {s.median_turnover_usd / 1_000_000:.1f}M" for s in
+                        sorted(thin, key=lambda s: s.median_turnover_usd))
+            + ". The backtester models no market impact at any size, so every modelled fill "
+            "on those is optimistic by an amount nothing here measures."
+        )
+    console.print(
+        "[dim]Nothing on the Bolsa de Santiago is listed: none of it is purchasable through "
+        "the broker available here, and its data was the worst in the project. See "
+        "docs/chilean_data_sources.md.[/dim]\n"
     )
 
-    bench = Table(title="Benchmarks", header_style="bold cyan")
+    regional = Table(title="Benchmarks by region (what a backtest is measured against)",
+                     header_style="bold cyan")
+    for column in ("region", "symbol", "kind", "available", "caveats"):
+        regional.add_column(column, overflow="fold")
+    for region, spec in REGION_BENCHMARKS.items():
+        regional.add_row(
+            region,
+            spec.symbol,
+            spec.kind,
+            "yes" if spec.available else "[red]no[/red]",
+            "\n".join(f"- {c}" for c in spec.caveats),
+        )
+    console.print(regional)
+
+    bench = Table(title="Benchmarks by market (data coverage only)", header_style="bold cyan")
     for column in ("market", "symbol", "kind", "currency", "available", "caveats"):
         bench.add_column(column, overflow="fold")
     for code, spec in BENCHMARK_AVAILABILITY.items():
@@ -317,6 +366,63 @@ def download_data(
         raise typer.Exit(code=1)
 
 
+
+@app.command("prune-data")
+def prune_data(
+    confirm: bool = typer.Option(
+        False, "--confirm", help="Actually delete. Without it, this only reports."
+    ),
+) -> None:
+    """Delete stored bars for instruments no longer in the universe.
+
+    Dry-run by default. The data in question is mostly the 18 Bolsa de Santiago tickers,
+    whose carried-forward tails and zero-volume feeds are the evidence behind
+    docs/chilean_data_sources.md -- so deleting it is opt-in, not a cleanup that happens on
+    its own.
+    """
+    init_database()
+    with session_scope() as session:
+        engine = DataEngine(session)
+        orphans = engine.undeclared_assets()
+        if not orphans:
+            console.print("[green]Nothing stored outside the declared universe.[/green]")
+            return
+
+        frame = engine.coverage()
+        ghosts = frame[~frame["declared"]]
+        total_bars = int(ghosts["bars"].sum())
+
+        table = Table(
+            title=f"{len(orphans)} asset(s) with no spec in the current universe",
+            header_style="bold cyan",
+        )
+        for column in ("market", "symbol", "bars", "first", "last"):
+            table.add_column(column, overflow="fold")
+        for _, row in ghosts.iterrows():
+            table.add_row(
+                row["market"],
+                row["symbol"],
+                f"{int(row['bars']):,}",
+                str(row["first_bar"] or "-"),
+                str(row["last_bar"] or "-"),
+            )
+        console.print(table)
+
+        if not confirm:
+            console.print(
+                f"[yellow]Dry run.[/yellow] {total_bars:,} bars across {len(orphans)} "
+                "asset(s) would be deleted. Nothing in the system reads them, so leaving "
+                "them costs only disk. Re-run with [bold]--confirm[/bold] to delete."
+            )
+            return
+
+        removed = engine.drop_undeclared_assets()
+        console.print(
+            f"[green]Deleted {removed['bars']:,} bars and {removed['assets']} asset "
+            "record(s).[/green] This is not reversible; a re-download would be needed, and "
+            "for a local Santiago ticker it may no longer be possible."
+        )
+
 @app.command("coverage")
 def coverage(
     timeframe: str = typer.Option("1D", "--timeframe", "-t"),
@@ -398,7 +504,7 @@ def audit(
 
 @app.command("features")
 def features(
-    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. AAPL or SQM-B."),
+    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. AAPL or SQM."),
     market: str = typer.Option(None, "--market", "-m", help="Needed only if ambiguous."),
     timeframe: str = typer.Option("1D", "--timeframe", "-t"),
 ) -> None:
@@ -1292,7 +1398,7 @@ def _print_robustness(report) -> None:
 
 @app.command("project")
 def project(
-    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. NVDA or SQM-B."),
+    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. NVDA or TSM."),
     market: str = typer.Option(None, "--market", "-m", help="Needed only if ambiguous."),
     horizons: str = typer.Option(
         ",".join(str(h) for h in DEFAULT_HORIZONS), "--horizons",
@@ -1447,6 +1553,459 @@ def _print_projection(result: dict, *, n_matches: int = 0) -> None:
     console.print(f"[dim]{result['note']}[/dim]")
 
 
+
+# --------------------------------------------------------------------------- #
+# Phase 6 -- real positions, bought elsewhere
+# --------------------------------------------------------------------------- #
+
+
+@app.command("buy")
+def record_buy(
+    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. SQM."),
+    quantity: float = typer.Option(..., "--qty", "-q", help="Shares you bought."),
+    price: float = typer.Option(..., "--price", "-p", help="What you actually paid per share."),
+    on: str = typer.Option(
+        None, "--on", help="Purchase date YYYY-MM-DD. Default: today."
+    ),
+    stop: float = typer.Option(None, "--stop", help="Stop level. Default: from the strategy."),
+    target: float = typer.Option(
+        None, "--target", help="Take-profit level. Default: from the strategy."
+    ),
+    fees: float = typer.Option(0.0, "--fees", help="Commission and taxes you paid."),
+    strategy_name: str = typer.Option(
+        "trend_momentum", "--strategy", help="Whose exit rule should watch this."
+    ),
+    broker: str = typer.Option("", "--broker", help="Free text, e.g. fintual."),
+    note: str = typer.Option("", "--note", help="Why you bought it."),
+) -> None:
+    """Record a purchase you already made. This does NOT buy anything.
+
+    This program has no broker connection and cannot place an order. You buy through your own
+    broker's app; this records what you bought so the daily check can watch it.
+
+    If you omit --stop and --target they are taken from the strategy's own levels as of your
+    purchase date, which is what the backtest measured. Supplying your own is fine, but then the
+    exit alerts are measuring a rule this project has never backtested.
+    """
+    from app.portfolio.holdings import open_holding
+
+    init_database()
+    purchase_date = date.fromisoformat(on) if on else date.today()
+
+    with session_scope() as session:
+        if stop is None or target is None:
+            resolved = _levels_from_strategy(session, symbol, strategy_name, purchase_date)
+            if resolved is None:
+                console.print(
+                    "[yellow]Could not derive levels from the strategy[/yellow] (not enough "
+                    f"stored history for {symbol.upper()} at {purchase_date}). Pass --stop and "
+                    "--target explicitly, or leave both out to record the position with no "
+                    "levels -- the watch will then only report the strategy's signal exit."
+                )
+            else:
+                derived_stop, derived_target, basis = resolved
+                stop = stop if stop is not None else derived_stop
+                target = target if target is not None else derived_target
+                console.print(f"[dim]Levels from {basis}.[/dim]")
+
+        try:
+            holding = open_holding(
+                session,
+                symbol,
+                quantity,
+                price,
+                opened_on=purchase_date,
+                strategy_name=strategy_name,
+                stop_price=stop,
+                take_profit_price=target,
+                entry_fees=fees,
+                broker=broker,
+                note=note,
+            )
+        except (ValueError, KeyError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        spec = find_asset(holding.symbol)
+        console.print(
+            f"[green]Recorded holding {holding.id}:[/green] {quantity:g} {holding.symbol} "
+            f"@ {price:g} {holding.currency} on {purchase_date} "
+            f"(cost {price * quantity + fees:,.2f} {holding.currency})"
+        )
+        if holding.stop_price or holding.take_profit_price:
+            console.print(
+                f"[dim]Watching for: stop {holding.stop_price}, "
+                f"target {holding.take_profit_price}, and {strategy_name}'s exit signal.[/dim]"
+            )
+        else:
+            console.print(
+                "[yellow]No stop or target recorded[/yellow], so the watch can only report "
+                "the strategy's signal exit. A price-based exit cannot fire on levels that "
+                "do not exist."
+            )
+        if spec.liquidity_caveat:
+            console.print(f"[yellow]{spec.liquidity_caveat}[/yellow]")
+        if spec.region != "United States":
+            console.print(
+                f"[dim]{holding.symbol} gives {spec.region} exposure but is priced in USD. "
+                "Your return will include the currency move, which nothing here separates "
+                "out.[/dim]"
+            )
+        console.print(
+            "\n[dim]Run [bold]python -m app watch[/bold] daily, or set up the GitHub Action "
+            "in .github/workflows/ so it runs without your computer on.[/dim]"
+        )
+
+
+@app.command("sell")
+def record_sell(
+    holding_id: int = typer.Argument(..., help="Holding id, from `python -m app holdings`."),
+    price: float = typer.Option(..., "--price", "-p", help="What you actually got per share."),
+    on: str = typer.Option(None, "--on", help="Sale date YYYY-MM-DD. Default: today."),
+    fees: float = typer.Option(0.0, "--fees", help="Commission and taxes you paid."),
+    note: str = typer.Option("", "--note", help="Why you sold."),
+) -> None:
+    """Record a sale you already made, and see the real P&L. This does NOT sell anything.
+
+    The figures this prints are the only ones in this project that are not modelled: they come
+    from the prices you report, not from an assumed fill.
+    """
+    from app.portfolio.holdings import close_holding, realised_performance
+
+    init_database()
+    sale_date = date.fromisoformat(on) if on else date.today()
+
+    with session_scope() as session:
+        try:
+            holding = close_holding(
+                session, holding_id, price, closed_on=sale_date, exit_fees=fees, note=note
+            )
+        except (KeyError, ValueError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        colour = "green" if (holding.pnl or 0) >= 0 else "red"
+        console.print(
+            f"[{colour}]Closed {holding.symbol}:[/{colour}] "
+            f"{holding.quantity:g} @ {holding.entry_price:g} -> {price:g}, "
+            f"net {holding.pnl:+,.2f} {holding.currency} "
+            f"({holding.pnl_pct:+.2f}%) over {holding.holding_period_days} days"
+        )
+        console.print(
+            f"[dim]Gross {holding.gross_pnl:+,.2f}, fees "
+            f"{holding.entry_fees + holding.exit_fees:,.2f}. Percent is on the cost basis "
+            "including the entry fee.[/dim]"
+        )
+
+        performance = realised_performance(session)
+        console.print(f"\n[bold]{performance['evidence']}[/bold]")
+
+
+@app.command("holdings")
+def show_holdings(
+    all_: bool = typer.Option(False, "--all", help="Include closed positions."),
+) -> None:
+    """Positions you have recorded, with what the latest stored bar says about them."""
+    from app.portfolio.holdings import list_holdings, realised_performance
+
+    init_database()
+    with session_scope() as session:
+        rows = list_holdings(session, include_closed=all_)
+        if not rows:
+            console.print(
+                "No holdings recorded. After you buy through your broker, record it:\n"
+                "  [bold]python -m app buy SQM --qty 10 --price 47.30[/bold]"
+            )
+            return
+
+        engine = DataEngine(session)
+        table = Table(title="Recorded holdings", header_style="bold cyan")
+        for column in (
+            "id", "symbol", "region", "qty", "entry", "last", "P&L", "%", "opened",
+            "status",
+        ):
+            table.add_column(column, overflow="fold")
+
+        for holding in rows:
+            spec = find_asset(holding.symbol, holding.market)
+            if holding.closed_on is not None:
+                last = f"{holding.exit_price:g}"
+                pnl, pct = holding.pnl, holding.pnl_pct
+                status = f"closed {holding.closed_on.date()}"
+            else:
+                bars = engine.load_spec(spec, trim_carried_forward=True)
+                price = float(bars["close"].iloc[-1]) if len(bars) else None
+                last = f"{price:g}" if price else "[red]no data[/red]"
+                pnl = (price - holding.entry_price) * holding.quantity if price else None
+                pct = (price / holding.entry_price - 1) * 100 if price else None
+                if holding.exit_signal_on is not None:
+                    status = f"[yellow]exit fired {holding.exit_signal_on.date()}[/yellow]"
+                elif holding.last_checked_on is None:
+                    status = "[red]never checked[/red]"
+                else:
+                    status = f"open, checked {holding.last_checked_on.date()}"
+
+            colour = "green" if (pnl or 0) >= 0 else "red"
+            table.add_row(
+                str(holding.id),
+                holding.symbol,
+                holding.region,
+                f"{holding.quantity:g}",
+                f"{holding.entry_price:g}",
+                last,
+                f"[{colour}]{pnl:+,.2f}[/{colour}]" if pnl is not None else "-",
+                f"[{colour}]{pct:+.2f}[/{colour}]" if pct is not None else "-",
+                str(holding.opened_on.date()),
+                status,
+            )
+        console.print(table)
+        console.print(
+            "[dim]Unrealised P&L is gross: it does not subtract what selling will cost. "
+            "Open positions are marked at the latest stored close, which is not a price you "
+            "can trade at.[/dim]"
+        )
+
+        performance = realised_performance(session)
+        if performance["n_closed"]:
+            console.print(
+                f"\n[bold]Closed:[/bold] {performance['n_closed']} trade(s), net "
+                f"{performance['net_pnl']:+,.2f} "
+                f"({performance['n_winners']} up, {performance['n_losers']} down), "
+                f"fees {performance['total_fees']:,.2f}"
+            )
+            console.print(f"[yellow]{performance['evidence']}[/yellow]")
+
+
+@app.command("watch")
+def watch_holdings(
+    channel: str = typer.Option(
+        None, "--channel", help="console, telegram or null. Default: from TELEGRAM_ENABLED."
+    ),
+    dry_run: bool = typer.Option(
+        False, "--dry-run", help="Evaluate and print without sending or recording anything."
+    ),
+    as_of: str = typer.Option(None, "--as-of", help="Evaluate as of YYYY-MM-DD."),
+    summary: bool = typer.Option(
+        False,
+        "--summary",
+        help="Also append a markdown summary to $GITHUB_STEP_SUMMARY, for scheduled runs.",
+    ),
+) -> None:
+    """Check every open holding against its strategy's exit rule, and alert on what fired.
+
+    This is the daily job. It rebuilds the position the backtester would hold, replays every bar
+    since your purchase through the same exit logic, and reports the first bar that triggered.
+
+    An alert means a rule fired. It does not mean the price will fall or that selling is right.
+    """
+    from app.notifications.base import build_notifier
+    from app.notifications.telegram import TelegramNotifier
+    from app.portfolio.watch import run_watch
+
+    init_database()
+    notifier = build_notifier(channel)
+    if notifier.name == "console" and (channel or "").lower() != "console":
+        console.print(f"[dim]{TelegramNotifier().describe_setup()}[/dim]")
+
+    evaluation_date = date.fromisoformat(as_of) if as_of else None
+
+    with session_scope() as session:
+        report = run_watch(session, notifier, as_of=evaluation_date, dry_run=dry_run)
+
+    if not report.outcomes:
+        console.print("No open holdings to check.")
+        return
+
+    table = Table(
+        title=f"Watch {report.ran_at.date()} via {report.channel}", header_style="bold cyan"
+    )
+    for column in ("symbol", "held since", "last", "unrealised %", "exit rule", "today"):
+        table.add_column(column, overflow="fold")
+
+    for outcome in report.outcomes:
+        if not outcome.usable:
+            table.add_row(
+                outcome.symbol, str(outcome.opened_on), "-", "-",
+                f"[red]cannot evaluate[/red]", f"[red]{outcome.problem[:60]}[/red]",
+            )
+            continue
+        if outcome.exit_triggered:
+            ago = outcome.sessions_since_trigger or 0
+            fired = (
+                f"[yellow]{outcome.exit_reason} today[/yellow]"
+                if ago == 0
+                else f"[yellow]{outcome.exit_reason} on {outcome.exit_triggered_on} "
+                     f"({ago} sessions ago)[/yellow]"
+            )
+        else:
+            fired = "[green]no exit[/green]"
+        pct = outcome.unrealised_pnl_pct
+        colour = "green" if (pct or 0) >= 0 else "red"
+        table.add_row(
+            outcome.symbol,
+            str(outcome.opened_on),
+            f"{outcome.last_price:g}" if outcome.last_price else "-",
+            f"[{colour}]{pct:+.2f}[/{colour}]" if pct is not None else "-",
+            fired,
+            outcome.decision_action,
+        )
+    console.print(table)
+
+    if dry_run:
+        console.print("[dim]Dry run: nothing was sent and nothing was recorded.[/dim]")
+        return
+
+    notifications = report.to_dict()["notifications"]
+    console.print(
+        f"[dim]Notifications: {notifications['sent']} sent, "
+        f"{notifications['failed']} failed, "
+        f"{notifications['suppressed_as_duplicate']} already sent earlier.[/dim]"
+    )
+    if notifications["failed"]:
+        console.print(
+            "[red]Some alerts were not delivered.[/red] Run "
+            "[bold]python -m app alerts[/bold] to see why."
+        )
+
+    if summary:
+        _write_step_summary(report)
+
+
+def _write_step_summary(report) -> None:
+    """Append a markdown summary of the watch to GitHub's job summary, if we are in Actions.
+
+    This is the free way to read the daily result on a phone. GitHub's mobile app renders a job
+    summary, and unlike GitHub Pages it does not require the repository to be public -- which
+    matters because this content includes position sizes and entry prices.
+
+    Silently does nothing outside Actions, so the flag is harmless locally.
+    """
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not target:
+        return
+
+    lines = [f"## Watch {report.ran_at:%Y-%m-%d %H:%M} UTC", ""]
+
+    triggered = report.triggered
+    if triggered:
+        lines.append(f"### {len(triggered)} exit rule(s) fired")
+        lines.append("")
+        lines.append("| Symbol | Rule | Fired | Sessions ago | Unrealised |")
+        lines.append("|---|---|---|---:|---:|")
+        for outcome in triggered:
+            lines.append(
+                f"| **{outcome.symbol}** | {outcome.exit_reason} | "
+                f"{outcome.exit_triggered_on} | {outcome.sessions_since_trigger} | "
+                f"{outcome.unrealised_pnl_pct:+.2f}% |"
+            )
+        lines.append("")
+        lines.append(
+            "> A fired rule means a rule this project backtested triggered. It does not mean "
+            "the price will fall, that selling is correct, or that the strategy is right."
+        )
+    else:
+        lines.append("No exit rule fired on any open position.")
+    lines.append("")
+
+    holding = [o for o in report.outcomes if o.usable and not o.exit_triggered]
+    if holding:
+        lines.append("### Still within the rules")
+        lines.append("")
+        lines.append("| Symbol | Since | Last | Unrealised | Stop in force | Today |")
+        lines.append("|---|---|---:|---:|---:|---|")
+        for outcome in holding:
+            stop = f"{outcome.effective_stop:.4g}" if outcome.effective_stop else "none"
+            lines.append(
+                f"| {outcome.symbol} | {outcome.opened_on} | {outcome.last_price:g} | "
+                f"{outcome.unrealised_pnl_pct:+.2f}% | {stop} | {outcome.decision_action} |"
+            )
+        lines.append("")
+
+    if report.unusable:
+        lines.append("### :warning: Could not be checked")
+        lines.append("")
+        for outcome in report.unusable:
+            lines.append(f"- **{outcome.symbol}**: {outcome.problem}")
+        lines.append("")
+        lines.append("These positions are **not** being watched until this is fixed.")
+        lines.append("")
+
+    notifications = report.to_dict()["notifications"]
+    lines.append(
+        f"_Notifications via {report.channel}: {notifications['sent']} sent, "
+        f"{notifications['failed']} failed, "
+        f"{notifications['suppressed_as_duplicate']} already sent earlier._"
+    )
+
+    with open(target, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
+
+
+@app.command("alerts")
+def show_alerts(limit: int = typer.Option(20, "--limit", "-n")) -> None:
+    """Every alert this system tried to send, and whether it arrived.
+
+    Delivery is recorded separately from the condition that caused it, because they fail
+    independently. A watch that found an exit and an alert that reached your phone are two
+    different facts.
+    """
+    from app.database.models import Alert
+
+    init_database()
+    with session_scope() as session:
+        rows = list(
+            session.scalars(
+                select(Alert).order_by(Alert.created_at.desc()).limit(limit)
+            )
+        )
+        if not rows:
+            console.print("No alerts yet.")
+            return
+
+        table = Table(title="Alerts", header_style="bold cyan")
+        for column in ("when", "kind", "symbol", "channel", "status", "subject", "why not"):
+            table.add_column(column, overflow="fold")
+        for alert in rows:
+            colour = {"SENT": "green", "FAILED": "red"}.get(alert.status, "yellow")
+            table.add_row(
+                alert.created_at.strftime("%Y-%m-%d %H:%M"),
+                alert.kind,
+                alert.symbol or "-",
+                alert.channel,
+                f"[{colour}]{alert.status}[/{colour}]",
+                alert.subject,
+                alert.failure_reason or "",
+            )
+        console.print(table)
+
+
+def _levels_from_strategy(
+    session, symbol: str, strategy_name: str, on: date
+) -> "tuple[float, float, str] | None":
+    """The stop and target the strategy proposed as of ``on``.
+
+    Taken from the strategy rather than invented so the levels the watch checks are the levels
+    the backtest measured. Returns None when there is not enough stored history, rather than
+    guessing -- a fabricated stop would make every subsequent alert meaningless.
+    """
+    from app.backtesting.runner import load_features
+    from app.strategies.registry import build_strategy
+
+    frames, _ = load_features(session, [symbol.upper()], "USA", end=on)
+    frame = frames.get(symbol.upper())
+    if frame is None or frame.empty:
+        return None
+
+    strategy = build_strategy(strategy_name)
+    decision = strategy.evaluate(frame, in_position=False)
+    if decision.stop_price is None or decision.take_profit_price is None:
+        return None
+    return (
+        round(float(decision.stop_price), 4),
+        round(float(decision.take_profit_price), 4),
+        f"{strategy_name} as of the {frame.index[-1].date()} close",
+    )
+
 @app.command("paper")
 def paper() -> None:
     """[Phase 6] Run the paper-trading loop."""
@@ -1510,6 +2069,52 @@ def report(
         f"split {result.config.split}[/dim]"
     )
 
+
+
+@app.command("digest")
+def build_digest(
+    output: str = typer.Option(
+        None, "--output", "-o", help="Where to write it. Default: reports/digest.html"
+    ),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    include_holdings: bool = typer.Option(
+        False,
+        "--include-holdings",
+        help="Add your positions. Makes the file UNSAFE to publish publicly.",
+    ),
+) -> None:
+    """Write a self-contained HTML digest of the universe as it stands today.
+
+    One file, no server, no build step: it opens from disk or from a static host, which is how
+    the dashboard becomes readable on a phone without your computer running.
+
+    Holdings are excluded by default. GitHub Pages on a free plan serves from a public
+    repository, so a digest with your positions in it would be world-readable.
+    """
+    from app.reporting.digest import generate_digest
+
+    setup_logging()
+    init_database()
+
+    with session_scope() as session:
+        written = generate_digest(
+            session,
+            output=Path(output) if output else None,
+            strategy_name=strategy_name,
+            include_holdings=include_holdings,
+        )
+
+    console.print(f"[green]OK[/green] digest written to [cyan]{written}[/cyan]")
+    if include_holdings:
+        console.print(
+            "[red]This file contains your position data.[/red] Do not publish it to GitHub "
+            "Pages or any other public location."
+        )
+    else:
+        console.print(
+            "[dim]No position data included, so this file is safe to publish. Market "
+            "analysis only.[/dim]"
+        )
 
 @app.command("serve")
 def serve(

@@ -441,10 +441,16 @@ class TestRealUniverseRoundTrip:
         stored = session.scalar(select(func.count()).select_from(Asset))
         assert stored == len(seen)
 
-    def test_chilean_assets_persist_with_clp(self, session) -> None:
+    def test_chilean_exposure_persists_as_a_usd_us_listing(self, session) -> None:
+        """No CLP asset is left to store, and that is the point being asserted.
+
+        SQM here is the NYSE ADR, not the Santiago B share. It has to round-trip as USD and
+        as a USA listing -- if it came back CLP or as market CHILE, the cost model and the
+        trading calendar applied to it would both be wrong.
+        """
         repo.sync_markets(session)
-        repo.upsert_asset(session, find_asset("SQM-B", "CHILE"))
-        asset = repo.get_asset(session, "SQM-B", "CHILE")
+        repo.upsert_asset(session, find_asset("SQM"))
+        asset = repo.get_asset(session, "SQM", "USA")
         assert asset is not None
-        assert asset.currency == "CLP"
-        assert asset.market_code == "CHILE"
+        assert asset.currency == "USD"
+        assert asset.market_code == "USA"

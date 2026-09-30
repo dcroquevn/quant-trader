@@ -54,6 +54,8 @@ __all__ = [
     "Order",
     "PortfolioSnapshot",
     "RiskEvent",
+    "Holding",
+    "Alert",
 ]
 
 
@@ -536,6 +538,149 @@ class Trade(Base):
     take_profit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
 
     backtest: Mapped["Backtest | None"] = relationship(back_populates="trades")
+
+
+
+class Holding(Base):
+    """A position the user actually bought, with their own money, through their own broker.
+
+    Distinct from :class:`Trade`, which is something this software simulated. The distinction
+    is the point: a Trade's entry price is a modelled fill and a Holding's is what was paid.
+    Letting the two share a table would let a backtest's P&L and a real one end up in the same
+    average.
+
+    This system never places the order. It records what the user says they did, watches the
+    strategy's exit rule against it, and tells them when the rule fires. Whether to act is
+    theirs.
+
+    ``stop_price`` and ``take_profit_price`` are stored at entry rather than recomputed,
+    because a level recomputed from today's data is not the level the position was opened on
+    and an exit check against it would be answering a different question.
+    """
+
+    __tablename__ = "holdings"
+    __table_args__ = (
+        Index("ix_holding_open", "closed_on", "symbol"),
+        CheckConstraint("quantity > 0", name="ck_holding_quantity_positive"),
+        CheckConstraint("entry_price > 0", name="ck_holding_entry_price_positive"),
+        CheckConstraint(
+            "exit_price IS NULL OR exit_price > 0", name="ck_holding_exit_price_positive"
+        ),
+        CheckConstraint(
+            "closed_on IS NULL OR closed_on >= opened_on", name="ck_holding_dates_ordered"
+        ),
+        # A closed holding needs both halves of the exit or its P&L is not computable.
+        CheckConstraint(
+            "(closed_on IS NULL AND exit_price IS NULL)"
+            " OR (closed_on IS NOT NULL AND exit_price IS NOT NULL)",
+            name="ck_holding_exit_complete",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    asset_id: Mapped[int] = mapped_column(
+        ForeignKey("assets.id", ondelete="CASCADE"), nullable=False
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False)
+    market: Mapped[str] = mapped_column(String(16), nullable=False)
+    currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+    region: Mapped[str] = mapped_column(String(32), nullable=False, default="United States")
+
+    broker: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    """Free text. This system has no broker connection; it is a note to the user."""
+
+    opened_on: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    entry_price: Mapped[float] = mapped_column(Float, nullable=False)
+    """What was actually paid per share, as reported by the user. Not a modelled fill."""
+
+    quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    entry_fees: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    closed_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_fees: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    strategy_name: Mapped[str] = mapped_column(String(64), nullable=False)
+    strategy_params: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    """The exact parameters the exit rule is evaluated with.
+
+    Pinned per holding so re-tuning the strategy later does not retroactively change what the
+    watch would have said about a position already open.
+    """
+
+    stop_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    take_profit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+    exit_signal_on: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    """The bar date on which the exit rule first fired. Null while it has not."""
+
+    exit_signal_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    last_checked_on: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    """When the watch last ran on this holding. A stale value means no one is watching."""
+
+    gross_pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    pnl: Mapped[float | None] = mapped_column(Float, nullable=True)
+    """Net of the fees the user reported. The only figure worth showing."""
+
+    pnl_pct: Mapped[float | None] = mapped_column(Float, nullable=True)
+    holding_period_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+    entry_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    exit_note: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+
+    @property
+    def is_open(self) -> bool:
+        return self.closed_on is None
+
+
+class Alert(Base):
+    """One notification, and whether it actually went out.
+
+    Delivery is recorded separately from the condition that caused it because they fail
+    independently: a Telegram token can expire, the network can be down, the user can have
+    blocked the bot. A system whose only output is a message has to be able to say whether the
+    message arrived.
+
+    ``dedupe_key`` is uniquely constrained. A watch run daily would otherwise re-send the same
+    exit signal every morning until the user sold, and an alert that repeats is an alert that
+    gets muted.
+    """
+
+    __tablename__ = "alerts"
+    __table_args__ = (
+        UniqueConstraint("dedupe_key", name="uq_alert_dedupe"),
+        Index("ix_alert_created", "created_at"),
+        CheckConstraint(
+            "status IN ('PENDING', 'SENT', 'FAILED', 'SUPPRESSED')", name="ck_alert_status"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    dedupe_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False)
+    holding_id: Mapped[int | None] = mapped_column(
+        ForeignKey("holdings.id", ondelete="SET NULL"), nullable=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+
+    subject: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    body: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    channel: Mapped[str] = mapped_column(String(32), nullable=False, default="console")
+
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="PENDING")
+    failure_reason: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, default=_utcnow
+    )
+    sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class PortfolioSnapshot(Base):
