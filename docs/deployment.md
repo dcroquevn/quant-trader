@@ -32,8 +32,10 @@ without publishing anything.
 
 - ✅ Positions, sizes and entry prices stay private.
 - ✅ Telegram alerts work.
-- ✅ Readable on a phone (GitHub app → Actions → the latest run).
-- ❌ No Pages site.
+- ✅ Readable on a phone (GitHub app → Actions → the latest run), covering both your positions
+  and the market overview.
+- ✅ The full digest downloadable as an artifact from each run.
+- ❌ No Pages site, so no permanent URL you can bookmark or share.
 - ⚠️ Actions minutes are metered. A run takes two to four minutes, so a weekday schedule is
   roughly 60–100 minutes a month.
 
@@ -129,6 +131,61 @@ input the first time so nothing is sent while you check the output.
 
 For Option B, also set **Settings → Pages → Source → GitHub Actions**.
 
+## What you actually open
+
+There is **no file in the repository to open**, and this is the part most likely to send you
+looking for something that does not exist. Two reasons:
+
+* GitHub shows an HTML file in a repository as *source code*, not as a rendered page.
+* `reports/` is gitignored, so the digest is not in the repository at all.
+
+What exists instead, in descending order of how often you will use it:
+
+### 1. Telegram — the thing that matters
+
+A message arrives when an exit rule fires on a position you recorded. This is the entire point of
+the daily run; everything else is context. Nothing to open, nothing to check.
+
+### 2. The Actions job summary — your phone dashboard
+
+GitHub mobile app → your repo → **Actions** tab → the most recent **Daily watch** run → scroll to
+the summary. It renders as a formatted page with two sections:
+
+* **Watch** — your positions, unrealised P&L, which stop is binding, and whether any rule fired.
+  When you hold nothing it says so explicitly, so you can tell "ran, nothing to check" from "never
+  ran".
+* **Market overview** — instrument counts and signals per region, and the benchmark each region is
+  measured against. Only instruments where something fired are listed; a HOLD row is not news.
+
+Most days the overview will say nothing fired. That is the normal case — the backtest made about 13
+entries a month across all 42 instruments — and the page says so rather than looking broken.
+
+### 3. The digest artifact — the full picture
+
+Same run page, **Artifacts** section at the bottom, `digest-<number>`. Download and open
+`digest.html` in any browser. It has every instrument, its liquidity, each region's benchmark and
+all its caveats. Awkward on a phone, useful on a laptop.
+
+### 4. The React dashboard — needs your computer running
+
+The richest surface, and the only one that cannot be scheduled. Two terminals:
+
+```bash
+python -m app serve            # terminal 1
+cd frontend && npm run dev     # terminal 2
+```
+
+Then `http://localhost:5173`. Interactive charts, the optimiser, walk-forward results, per-instrument
+projections — none of which fits in a job summary.
+
+### Locally, without GitHub at all
+
+```bash
+python -m app digest
+```
+
+Writes `reports/digest.html`. Double-click it. No server, no build step, works offline.
+
 ## The cache is not storage
 
 This is the part most likely to bite you.
@@ -156,7 +213,7 @@ still will eventually.
 
 | Workflow | Schedule | What it does | Needs |
 |---|---|---|---|
-| `daily-watch.yml` | 21:30 UTC, Mon–Fri | Downloads bars, checks your positions, sends Telegram alerts, writes a job summary | Telegram secrets; a private repo |
+| `daily-watch.yml` | 21:30 UTC, Mon–Fri | Downloads bars, checks your positions, sends Telegram alerts, writes a job summary with both your positions and a market overview, attaches the digest as an artifact | Telegram secrets; a private repo |
 | `publish-digest.yml` | 22:00 UTC, Mon–Fri | Downloads bars, builds the static digest, deploys to Pages | Pages enabled; a public repo on the free plan |
 
 21:30 UTC is after the US close with enough margin for the provider to settle the final bar.

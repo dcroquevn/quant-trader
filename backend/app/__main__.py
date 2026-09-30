@@ -1891,6 +1891,10 @@ def watch_holdings(
 
     if not report.outcomes:
         console.print("No open holdings to check.")
+        if summary:
+            # Still record that the watch ran. "The watch ran and you hold nothing" and "the
+            # watch never ran" are different facts, and only one of them needs action.
+            _write_step_summary(report)
         return
 
     table = Table(
@@ -1962,6 +1966,18 @@ def _write_step_summary(report) -> None:
         return
 
     lines = [f"## Watch {report.ran_at:%Y-%m-%d %H:%M} UTC", ""]
+
+    if not report.outcomes:
+        lines += [
+            "The watch ran. **No positions are recorded**, so there was nothing to check.",
+            "",
+            "Record a purchase you made with "
+            "`python -m app buy SYMBOL --qty N --price P`.",
+            "",
+        ]
+        with open(target, "a", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+        return
 
     triggered = report.triggered
     if triggered:
@@ -2166,6 +2182,11 @@ def build_digest(
         "--include-holdings",
         help="Add your positions. Makes the file UNSAFE to publish publicly.",
     ),
+    summary: bool = typer.Option(
+        False,
+        "--summary",
+        help="Also append a market overview to $GITHUB_STEP_SUMMARY, for scheduled runs.",
+    ),
 ) -> None:
     """Write a self-contained HTML digest of the universe as it stands today.
 
@@ -2199,6 +2220,108 @@ def build_digest(
             "[dim]No position data included, so this file is safe to publish. Market "
             "analysis only.[/dim]"
         )
+
+    if summary:
+        with session_scope() as session:
+            _write_market_summary(session, strategy_name)
+
+
+def _write_market_summary(session, strategy_name: str) -> None:
+    """Append a market overview to GitHub's job summary, if we are in Actions.
+
+    This exists because on a private repository the job summary is the only surface the user can
+    read from a phone -- Pages on the free plan needs a public repo. Without this, a scheduled run
+    for someone holding nothing produces a page that says "No exit rule fired" and stops, which
+    teaches the reader to stop opening it.
+
+    Compact on purpose: signals and per-region totals only. Nobody scrolls 42 rows of indicator
+    values on a phone, and the full detail is in the HTML artifact.
+    """
+    target = os.environ.get("GITHUB_STEP_SUMMARY")
+    if not target:
+        return
+
+    from app.reporting.digest import collect_digest_data
+
+    data = collect_digest_data(session, strategy_name=strategy_name)
+    stamp = data["generated_at"]
+
+    lines = ["", "---", "", f"## Market overview {stamp:%Y-%m-%d}", ""]
+
+    stalest = data["stalest"]
+    if stalest is not None:
+        symbol, last = stalest
+        age = (stamp.date() - last).days
+        marker = ":warning: " if age > 5 else ""
+        lines += [
+            f"{marker}Data as of **{last}** at the oldest ({symbol}, {age} days back). "
+            "Everything below is computed from stored bars.",
+            "",
+        ]
+
+    lines += ["| Region | Instruments | Entry conditions hold | Exit conditions hold | Benchmark |",
+              "|---|---:|---:|---:|---|"]
+    for entry in data["regions"]:
+        lines.append(
+            f"| {entry['region']} | {len(entry['specs'])} | {entry['n_buy']} | "
+            f"{entry['n_sell']} | {entry['benchmark'].symbol or 'none'} |"
+        )
+    lines.append("")
+
+    # Only the instruments where something actually fired. A HOLD row is not news.
+    signals = [
+        (entry["region"], row)
+        for entry in data["regions"]
+        for row in entry["rows"]
+        if row.action in {"BUY", "SELL"}
+    ]
+    if signals:
+        lines += [
+            f"### {len(signals)} signal(s) today",
+            "",
+            "| Region | Symbol | Signal | Score | Price | 20d | Notes |",
+            "|---|---|---|---:|---:|---:|---|",
+        ]
+        for region, row in signals:
+            flags = []
+            if not row.tradable:
+                flags.append(f":warning: {row.blocked_reason}")
+            spec = find_asset(row.symbol, row.market)
+            if spec.is_thinly_traded:
+                flags.append("thinly traded")
+            # price and return_20d are nullable. Formatting None with :.2f raises, which
+            # would crash the scheduled run *after* the alerts had gone out.
+            price_cell = f"{row.price:.2f}" if row.price is not None else "n/a"
+            return_cell = (
+                f"{row.return_20d:+.1f}%" if row.return_20d is not None else "n/a"
+            )
+            lines.append(
+                f"| {region} | **{row.symbol}** | {row.action} | {row.score:.2f} | "
+                f"{price_cell} | {return_cell} | {' · '.join(flags) or '—'} |"
+            )
+        lines += [
+            "",
+            "> A BUY row means this strategy's entry conditions currently hold on historical "
+            "data. The score counts how many conditions hold -- it is **not** a probability of "
+            "profit and not a forecast. Nothing here says any instrument will rise or fall.",
+        ]
+    else:
+        lines += [
+            "**No entry or exit conditions hold on any instrument today.** That is the normal "
+            "case, not a problem: over the 2016-2021 backtest this strategy made 915 entries "
+            "across all 42 instruments, about 13 a month in total.",
+        ]
+
+    lines += [
+        "",
+        "_Every instrument is US-listed and priced in USD. The Chilean and Asian ones are ADRs "
+        "and country ETFs, so their returns carry the currency move as well as the underlying "
+        "move. The full digest is attached to this run as an artifact._",
+        "",
+    ]
+
+    with open(target, "a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines) + "\n")
 
 @app.command("serve")
 def serve(

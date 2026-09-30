@@ -106,6 +106,31 @@ jobs:
         run: |
           python -m app watch --summary ${{ inputs.dry_run && '--dry-run' || '' }}
 
+      # The market overview, appended to the same job summary. Without this, a private
+      # repository's daily page says only "no positions recorded" until you record one --
+      # and a notification that says nothing teaches you to stop opening it.
+      #
+      # No --include-holdings: the positions are already covered above, and keeping this
+      # file publishable means it can be attached as an artifact without a second thought.
+      - name: Build the market overview
+        if: always()
+        env:
+          PYTHONPATH: backend
+          PAPER_TRADING: 'true'
+          LIVE_TRADING: 'false'
+        run: python -m app digest --summary --output digest.html
+
+      - name: Upload the digest
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ github.run_number }}
+          path: digest.html
+          retention-days: 14
+          if-no-files-found: warn
+        # Download and open it for the full picture: every instrument, its liquidity, each
+        # region's benchmark and its caveats. The job summary above is the phone-sized version.
+
       # Runs even when the watch failed, so a crash still leaves the newly downloaded bars
       # cached rather than re-fetching them tomorrow.
       - name: Keep the database

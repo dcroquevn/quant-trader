@@ -28,7 +28,9 @@ software has no broker connection and places no orders. See
 
 It can run daily on GitHub Actions so your computer does not have to be on —
 [docs/deployment.md](docs/deployment.md), including the trade-off that decides whether you get a
-public dashboard or private alerts.
+public dashboard or private alerts, and
+[what you actually open](docs/deployment.md#what-you-actually-open) (there is no dashboard file in
+the repository; GitHub renders an HTML file as source code, not as a page).
 
 Free Chilean data sources were surveyed separately; see
 [docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
@@ -39,6 +41,7 @@ what turned out not to.
 ## Table of contents
 
 - [What works today](#what-works-today)
+- [What horizon this operates on](#what-horizon-this-operates-on)
 - [Why there are no Santiago tickers](#why-there-are-no-santiago-tickers)
 - [Quick start](#quick-start)
 - [Tracking real positions](#tracking-real-positions)
@@ -88,6 +91,52 @@ what turned out not to.
 
 Commands belonging to later phases are registered and **refuse to run**, naming
 the phase they belong to. Nothing prints a fabricated result.
+
+---
+
+## What horizon this operates on
+
+Measured, not intended. 915 trades on TRAIN across all three regions:
+
+| | days held |
+|---|---|
+| 10th percentile | 2 |
+| 25th percentile | 5 |
+| **median** | **16** |
+| 75th percentile | 34 |
+| 90th percentile | 54 |
+
+Only 33% of positions close within a week; 71% close within a month.
+
+**Where the money came from, by how long the position was held:**
+
+| Held | Trades | Win rate | Median | Share of total P&L |
+|---|---:|---:|---:|---:|
+| 1–7 days | 301 | 13% | −2.36% | **−66%** |
+| 8–14 days | 132 | 14% | −2.81% | −19% |
+| 15–30 days | 212 | 40% | −1.10% | +43% |
+| 31–60 days | 203 | 65% | +3.13% | **+90%** |
+| 60+ days | 67 | 96% | +8.15% | **+52%** |
+
+Positions that end within a week are where the losses are, and the reason is visible in why they
+close: the median stop-out lasts 8 days and loses 3.67%, while the median target hit takes 36 days
+and gains 10.26%.
+
+**The holding period is an outcome, not a setting.** Nobody chooses to take only the 40-day trades —
+you choose to enter, and the market decides whether you are stopped out in five days or left to run
+for forty. The table describes what happened; it is not a knob.
+
+**The number that governs everything else:** the best 5% of trades produced **102% of net P&L**.
+Without those ~45 trades out of 915, the sample loses money (−2,971 against +136,400). With a 36.7%
+win rate, two of every three positions lose, and what carried the sample was a handful of winners
+allowed to run.
+
+So this suits a horizon of **weeks to months, across many simultaneous positions**. It does not suit
+buying one instrument and selling it a week later: that is the bucket where this design loses, and a
+handful of trades a year cannot reach the average that made the sample work.
+
+All of the above is TRAIN (2016–2021), the partition where parameters are fitted. It is the most
+favourable view this system can produce and **does not establish future profitability**.
 
 ---
 
