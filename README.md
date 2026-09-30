@@ -10,7 +10,7 @@ Runs entirely on your machine, on free data sources, with SQLite. Total cost: **
 > look-ahead bias. Live order routing is **not implemented** — `LIVE_TRADING=true`
 > is rejected at startup rather than ignored.
 
-**Status: Phases 1–3 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics and HTML reports.
+**Status: Phases 1–4 of 8 complete** — data foundation, indicators, strategy engine, scanner, backtester, metrics, HTML reports, dashboard, parameter optimisation, walk-forward analysis and robustness testing.
 
 Free Chilean data sources were surveyed separately; see
 [docs/chilean_data_sources.md](docs/chilean_data_sources.md) for what exists and
@@ -47,11 +47,14 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 592 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 693 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
-| Parameter optimisation and walk-forward | Phase 4 |
+| Parameter search with a configurable objective (not return alone) | Done |
+| Train/validation/test separation, enforced in four independent places | Done |
+| Walk-forward analysis: optimise, freeze, trade the next window, repeat | Done |
+| Six robustness checks, including fragility and cost-breakeven | Done |
 | Historical analogues and statistical scenarios | Phase 5 |
 | Paper trading | Phase 6 |
 
@@ -130,12 +133,16 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app scan` | Rank the universe by the strategy's current reading |
 | `python -m app backtest` | Backtest with costs, slippage and a benchmark |
 | `python -m app report` | Backtest plus a standalone HTML report |
+| `python -m app optimize` | Search TRAIN, select on VALIDATION |
+| `python -m app walk-forward` | Rolling out-of-sample analysis |
+| `python -m app robustness` | Stress-test one configuration |
+| `python -m app runs` | List stored searches and studies |
 | `python -m app serve` | Run the API |
 
 Useful flags: `--market USA|CHILE`, `--symbols AAPL,SQM-B`, `--timeframe 1D|1H|15m|5m`,
 `--start`/`--end`, `--full`.
 
-**Registered but refusing to run:** `optimize`, `walk-forward`, `project`, `paper`.
+**Registered but refusing to run:** `project` (Phase 5), `paper` (Phase 6).
 
 Backtest flags: `--split full|train|validation|test`, `--strategy`, `--symbols`,
 `--start`/`--end`, `--capital`, `--finalising`.
@@ -185,11 +192,18 @@ quant-trader/
 │   │   │   ├── metrics.py      Performance metrics and benchmark comparison
 │   │   │   ├── runner.py       bars → features → backtest → metrics
 │   │   │   └── report.py       Standalone HTML reports
-│   │   ├── optimization|projections|portfolio|
-│   │   │   execution|risk/     (Phase 4+)
+│   │   ├── optimization/
+│   │   │   ├── space.py        Parameter axes, grids, reproducible sampling
+│   │   │   ├── objective.py    Weighted objective + fragility penalty
+│   │   │   ├── search.py       TRAIN-only search, VALIDATION selection
+│   │   │   ├── walkforward.py  Rolling windows with frozen parameters
+│   │   │   ├── robustness.py   Six stress tests
+│   │   │   └── store.py        Persisting runs for the dashboard to read
+│   │   ├── projections|portfolio|
+│   │   │   execution|risk/     (Phase 5+)
 │   │   ├── api/main.py         FastAPI endpoints
 │   │   └── __main__.py         CLI
-│   └── tests/                  592 tests
+│   └── tests/                  693 tests
 ├── frontend/                   React + TypeScript + Vite + Tailwind + Recharts
 ├── data/                       SQLite database (gitignored)
 ├── reports/                    Generated reports (gitignored)
@@ -235,6 +249,23 @@ cannot be filled where the market never traded.
 `DataLeakageError` unless `finalising=True` is passed explicitly, and the HTTP endpoint
 returns 409 with no override at all. Reading the test partition during a search turns it
 into a second validation set and leaves no out-of-sample estimate.
+
+**The search cannot be pointed at the wrong data.** `run_search()` has no `split`
+argument — the guard is the absence of the parameter, because an argument that can defeat
+a guard eventually will. Four independent enforcements: no parameter, a hard-coded
+`resolve_window("train")`, a `CHECK (split = 'train')` constraint on the table, and a
+refusal in the persistence layer. A test asserts the parameter stays absent.
+
+**The objective is not return.** Optimising for return alone reliably produces a strategy
+that concentrates everything into a few lucky trades. The score weights return, Sharpe,
+Sortino, drawdown, turnover, volatility and sample size, normalised with `tanh` so one
+spectacular outlier cannot swamp every other term. Weights are configurable and five
+presets ship.
+
+**A spike is penalised.** After scoring, the top candidates have their immediate
+*neighbours* evaluated, and a configuration that scores well only at its own exact
+settings is marked down. Without that, a search reports the highest peak it found — and
+the highest peak in a noisy landscape is noise.
 
 **Split provenance is persisted.** Every backtest row records which partition it
 read, and a database `CHECK` constraint prevents an `OptimizationRun` from claiming
@@ -305,6 +336,70 @@ here the *unoptimised* ones are not even viable.
 assumptions dominate the result. The US figures rest on an assumed 0.08% round trip; at a
 realistic retail cost the edge largely disappears. Replace the placeholders in `.env` with
 your broker's actual schedule before drawing any conclusion.
+
+### What optimising it revealed
+
+A 30-trial search on the USA TRAIN split, with the balanced objective, then the top five
+re-run on VALIDATION:
+
+| Rank on train | Train objective | Validation objective | Degradation |
+|---|---|---|---|
+| 1 | 2.235 | 1.097 | +1.14 |
+| 2 | 2.214 | 0.505 | +1.71 |
+| 3 | 2.171 | **−2.011** | +4.18 |
+| 4 | 2.141 | 0.350 | +1.79 |
+| 5 | 2.060 | **−1.953** | +4.01 |
+
+**Every candidate degraded, and two went from a positive train score to a negative
+validation score** — they lost money out of sample. The best surviving configuration
+returned 4.3% on validation at Sharpe 0.73, against 2.2 on train.
+
+Parameter stability was worse than the headline suggests: among the best trials
+`rsi_min` and `max_holding_bars` each took three different values with only 33%
+concentration. Either they do not matter or the search is fitting noise in them, and in
+both cases the value it picked carries little information.
+
+That is the system working as intended. It is not evidence the strategy is good; it is
+evidence that a train-set winner is the most overfitted candidate available, which is why
+the validation split exists and why `walk-forward` is the command to trust.
+
+### What walk-forward found — the number to actually read
+
+Seven rolling windows, 4 years train / 1 year test, re-optimising and freezing parameters
+before each test year. Every figure below is out-of-sample with respect to the parameters
+that produced it.
+
+| Test year | OOS return | Sharpe | Max DD | Trades |
+|---|---|---|---|---|
+| 2020 | **+25.0%** | 2.96 | −7.1% | 51 |
+| 2021 | +5.6% | 0.81 | −4.4% | 45 |
+| 2022 | −0.4% | −0.67 | −0.7% | **2** |
+| 2023 | +1.7% | 0.49 | −4.7% | 25 |
+| 2024 | +4.3% | 0.82 | −5.9% | 22 |
+| 2025 | +7.5% | 1.05 | −5.1% | 62 |
+| 2026 | +0.3% | 0.11 | −3.6% | 24 |
+
+**Stitched out-of-sample: +50.4% total, 6.25% CAGR, Sharpe 1.10, Sortino 1.65, max
+drawdown −7.1%, volatility 5.7%, 231 trades.**
+
+A Sharpe near 1.1 with a 7% worst drawdown, entirely out-of-sample, is the most defensible
+result this project has produced. Three things qualify it, all of which the tool reported
+on its own:
+
+**2020 carries half of it.** Excluding that one window leaves +20.3% over six years — a
+3.1% CAGR rather than 6.3%. 2020 was an exceptional year for trend following, and a
+strategy whose out-of-sample record depends on one such year has been tested against one
+regime, not several.
+
+**The 2022 window took two trades.** Its frozen parameters (`rsi_min=45`,
+`min_relative_volume=2.0`) were restrictive enough that it barely traded. A two-trade year
+is not a measurement, and its −0.4% should be read as "no information" rather than as a
+small loss.
+
+**Four of six parameters changed in more than half the windows** — consistency 29% to 43%.
+The procedure is re-fitting each period rather than converging on a stable setting, which
+means the parameters it would choose for the next year carry little information. That is
+the most important finding here, and it is not visible in the headline at all.
 
 ## Limitations you must know about
 
@@ -411,7 +506,8 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 592 tests (589 offline, 3 live)
+python -m pytest                          # 693 tests (690 offline, 3 live)
+python -m pytest -m 'not slow'            # skip the minutes-long integration tests
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
 ```
@@ -438,6 +534,15 @@ double. Notable test groups:
   its own bounds.
 - **`test_metrics.py`** — metric values against hand arithmetic, and that undefined
   metrics return null rather than zero or infinity.
+- **`test_optimization.py`** — that `run_search` has no `split` parameter, that the
+  objective's components stay bounded, and that changing the weights actually changes the
+  ranking.
+- **`test_walkforward_robustness.py`** — that every test window begins strictly after its
+  own training window ends, and that the concentration checks detect a result carried by
+  one trade.
+- **`test_strategies.py`** — that the engine's fast path agrees with the reference
+  implementation bar by bar. It is 22x faster, and a fast path that disagreed would be
+  worse than a slow one.
 
 ---
 
@@ -448,7 +553,7 @@ double. Notable test groups:
 | **1** | **Data foundation, database, indicators — complete** |
 | **2** | **Strategy engine, scanner, backtester, metrics, HTML reports — complete** |
 | **3** | **Dashboard — complete** |
-| 4 | Optimisation, objective function, train/validation/test, walk-forward |
+| **4** | **Optimisation, objective function, walk-forward, robustness — complete** |
 | 5 | Projection engine, historical analogues, robustness testing |
 | 6 | Paper trading — Alpaca for US, internal broker for Chile |
 | 7 | Telegram alerts |

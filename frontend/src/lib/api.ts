@@ -394,6 +394,151 @@ export interface BacktestParams {
 }
 
 /* ------------------------------------------------------------------ */
+/* Phase 4: optimisation and walk-forward                             */
+/* ------------------------------------------------------------------ */
+
+export interface OptimizationRunSummary {
+  id: number;
+  label: string;
+  market: string;
+  method: string;
+  /** Always "train". The search cannot read any other partition. */
+  split: string;
+  n_trials: number;
+  n_failed: number;
+  seed: number | null;
+  best_objective: number | null;
+  best_params: Record<string, number | string | boolean>;
+  grid_size: number | null;
+  overfitting_prone: boolean | null;
+  warnings: string[];
+  has_validation: boolean;
+  recommended_params: Record<string, number | string | boolean> | null;
+  has_robustness: boolean;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface TrialRow {
+  params: Record<string, number | string | boolean>;
+  metrics: Record<string, number | null>;
+  objective: {
+    value: number;
+    components: Record<string, number>;
+    contributions: Record<string, number>;
+    missing: string[];
+    notes: string[];
+    fragility: number | null;
+  };
+  seconds: number;
+  error: string;
+}
+
+export interface ParameterStability {
+  available: boolean;
+  reason?: string;
+  sample?: number;
+  n_windows?: number;
+  parameters?: Record<
+    string,
+    {
+      distinct_values: number;
+      modal_value?: string;
+      concentration: number;
+      values_by_window?: Array<number | string | boolean | null>;
+      min?: number;
+      max?: number;
+      mean?: number;
+      relative_spread?: number | null;
+    }
+  >;
+  unstable?: string[];
+  note?: string;
+}
+
+export interface ValidationCandidate {
+  params: Record<string, number | string | boolean>;
+  train: Record<string, number | null> & { objective: number };
+  validation: (Record<string, number | null> & { objective: number }) | null;
+  degradation: number | null;
+  error: string;
+}
+
+export interface RobustnessCheck {
+  available: boolean;
+  reason?: string;
+  verdict?: string;
+  [key: string]: unknown;
+}
+
+export interface OptimizationRunDetail extends OptimizationRunSummary {
+  param_space: { axes: Array<{ name: string; values: unknown[]; span: string }>; grid_size: number; overfitting_prone: boolean };
+  objective_weights: Record<string, number>;
+  trials: TrialRow[];
+  parameter_stability: ParameterStability;
+  validation_selection: {
+    candidates: ValidationCandidate[];
+    recommended: ValidationCandidate | null;
+    notes: string[];
+    validation_window: { start: string; end: string };
+  } | null;
+  stress_tests: {
+    baseline: Record<string, number | null>;
+    checks: Record<string, RobustnessCheck>;
+    verdicts: string[];
+    is_fragile: boolean;
+    caveats: string[];
+  } | null;
+  note: string;
+}
+
+export interface WalkForwardWindow {
+  window: {
+    index: number;
+    train_start: string;
+    train_end: string;
+    test_start: string;
+    test_end: string;
+  };
+  chosen_params: Record<string, number | string | boolean>;
+  n_candidates_searched: number;
+  train: Record<string, number | null> & { objective: number | null };
+  /** The only out-of-sample figures in the payload. */
+  test: Record<string, number | null>;
+  error: string;
+}
+
+export interface WalkForwardSummary {
+  id: number;
+  label: string;
+  market: string;
+  train_years: number;
+  test_years: number;
+  n_windows: number;
+  n_usable: number;
+  n_losing_windows: number;
+  total_return_pct: number | null;
+  cagr_pct: number | null;
+  sharpe: number | null;
+  sortino: number | null;
+  max_drawdown_pct: number | null;
+  n_trades: number | null;
+  unstable_parameters: string[];
+  warnings: string[];
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface WalkForwardDetail extends WalkForwardSummary {
+  param_space: Record<string, unknown>;
+  windows: WalkForwardWindow[];
+  aggregate_metrics: Record<string, unknown>;
+  parameter_stability: ParameterStability;
+  equity_curve: Array<{ ts: string; equity: number }>;
+  note: string;
+}
+
+/* ------------------------------------------------------------------ */
 /* Endpoints                                                          */
 /* ------------------------------------------------------------------ */
 
@@ -401,6 +546,22 @@ export const api = {
   health: () => get<Health>('/api/health'),
   strategies: () => get<{ strategies: StrategyInfo[]; note: string }>('/api/strategies'),
   splits: () => get<{ splits: SplitInfo[] }>('/api/splits'),
+  objectivePresets: () =>
+    get<{ presets: Record<string, Record<string, number>>; note: string }>(
+      '/api/objective-presets',
+    ),
+  optimizationRuns: (market?: string) =>
+    get<{ runs: OptimizationRunSummary[]; count: number; how_to_create: string }>(
+      '/api/optimization/runs',
+      { market },
+    ),
+  optimizationRun: (id: number) => get<OptimizationRunDetail>(`/api/optimization/runs/${id}`),
+  walkForwardRuns: (market?: string) =>
+    get<{ runs: WalkForwardSummary[]; count: number; how_to_create: string; note: string }>(
+      '/api/walkforward/runs',
+      { market },
+    ),
+  walkForwardRun: (id: number) => get<WalkForwardDetail>(`/api/walkforward/runs/${id}`),
   scan: (params: ScanParams = {}) =>
     get<ScanResponse>('/api/scan', {
       market: params.market,

@@ -51,6 +51,7 @@ __all__ = [
     "WindowSpec",
     "resolve_window",
     "load_features",
+    "prepare_frames",
     "run_backtest",
     "WARMUP_CALENDAR_DAYS",
 ]
@@ -186,12 +187,20 @@ def run_backtest(
     finalising: bool = False,
     label: str = "",
     include_benchmark: bool = True,
+    frames: dict[str, pd.DataFrame] | None = None,
 ) -> BacktestResult:
     """Run one backtest end to end and attach metrics.
 
     Warm-up is handled by loading history from before the window and then restricting
     *trading* to the window: features are computed on everything available, and the
     engine only acts from ``window.start`` onwards.
+
+    ``frames`` accepts an already-computed feature set, which a parameter search reuses
+    across trials. Features depend only on bars, never on strategy parameters, so
+    recomputing forty indicators over the whole universe for every trial is pure waste —
+    it made searches roughly an order of magnitude slower than necessary. The caller is
+    responsible for having built them over a window at least as wide as this one; see
+    :func:`prepare_frames`.
     """
     settings = get_settings()
     market_spec = get_market(market)
@@ -207,16 +216,29 @@ def run_backtest(
     # strict warning filter turns into an error.
     warmup_start = window.start - timedelta(days=WARMUP_CALENDAR_DAYS)
 
-    frames, skipped = load_features(
-        session,
-        tradable,
-        market_spec.code,
-        timeframe=timeframe,
-        warmup_start=warmup_start,
-        end=window.end,
-    )
-    if skipped:
-        logger.info("Skipped %d symbol(s) with insufficient history: %s", len(skipped), skipped)
+    skipped: list[str] = []
+    if frames is None:
+        frames, skipped = load_features(
+            session,
+            tradable,
+            market_spec.code,
+            timeframe=timeframe,
+            warmup_start=warmup_start,
+            end=window.end,
+        )
+        if skipped:
+            logger.info(
+                "Skipped %d symbol(s) with insufficient history: %s", len(skipped), skipped
+            )
+    elif symbols:
+        # Honour an explicit symbol list even against a shared frame set, so a caller
+        # cannot accidentally backtest the whole universe by passing cached frames.
+        requested = {s.upper() for s in symbols}
+        frames = {k: v for k, v in frames.items() if k.upper() in requested}
+        if not frames:
+            raise InsufficientDataError(
+                f"None of {sorted(requested)} is present in the supplied feature frames."
+            )
 
     capital = initial_capital or (
         settings.initial_capital_usd
@@ -257,6 +279,39 @@ def run_backtest(
         )
 
     return result
+
+
+def prepare_frames(
+    session: Session,
+    market: str,
+    *,
+    split: str = "full",
+    start: date | None = None,
+    end: date | None = None,
+    symbols: list[str] | None = None,
+    timeframe: "str | Timeframe" = Timeframe.D1,
+    finalising: bool = False,
+) -> tuple[dict[str, pd.DataFrame], list[str]]:
+    """Build the feature frames a backtest over this window would build.
+
+    Exists so a parameter search can compute features once and hand the same frames to
+    every trial. Uses the identical warm-up rule as :func:`run_backtest`, so a cached set
+    and a fresh one produce the same results — a cache that quietly changed the answer
+    would be worse than the wasted time it saves.
+    """
+    market_spec = get_market(market)
+    window = resolve_window(split, start=start, end=end, finalising=finalising)
+    tradable = symbols or [s.symbol for s in universe_for_market(market_spec.code)]
+    warmup_start = window.start - timedelta(days=WARMUP_CALENDAR_DAYS)
+
+    return load_features(
+        session,
+        tradable,
+        market_spec.code,
+        timeframe=timeframe,
+        warmup_start=warmup_start,
+        end=window.end,
+    )
 
 
 def _benchmark(

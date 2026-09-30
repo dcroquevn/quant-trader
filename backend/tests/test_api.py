@@ -382,3 +382,113 @@ class TestBacktest:
     def test_unknown_market_is_handled(self, client) -> None:
         response = client.get("/api/backtest", params={"market": "PERU"})
         assert response.status_code in (400, 404)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4: optimisation endpoints
+# --------------------------------------------------------------------------- #
+
+
+class TestOptimizationEndpoints:
+    """Contract for the optimisation endpoints the dashboard reads.
+
+    These are deliberately read-only. A search takes minutes and a walk-forward study
+    longer, so an endpoint that *ran* one would either time out or silently repeat an
+    expensive job on every page load.
+    """
+
+    def test_objective_presets_are_listed(self, client) -> None:
+        body = client.get("/api/objective-presets").json()
+        assert "balanced" in body["presets"]
+        assert "capital_preservation" in body["presets"]
+
+        for name, weights in body["presets"].items():
+            assert "sharpe" in weights, name
+            assert "max_drawdown" in weights, name
+            assert "fragility_penalty" in weights, name
+
+    def test_preset_note_refuses_to_oversell_the_objective(self, client) -> None:
+        """The objective value is an arbitrary scale, and the API must say so."""
+        note = client.get("/api/objective-presets").json()["note"].lower()
+        assert "arbitrary scale" in note
+        assert "not a return" in note or "not a probability" in note
+
+    def test_default_preset_does_not_put_return_first(self, client) -> None:
+        balanced = client.get("/api/objective-presets").json()["presets"]["balanced"]
+        assert balanced["sharpe"] > balanced["total_return"]
+
+    def test_run_listings_respond_with_a_shape_even_when_empty(self, client) -> None:
+        for path in ("/api/optimization/runs", "/api/walkforward/runs"):
+            body = client.get(path).json()
+            assert isinstance(body["runs"], list)
+            assert body["count"] == len(body["runs"])
+            # An empty listing must still say how to produce one.
+            assert "python -m app" in body["how_to_create"]
+
+    def test_stored_searches_always_claim_the_train_split(self, client) -> None:
+        """A stored run that claimed otherwise could not exist; assert it anyway."""
+        for run in client.get("/api/optimization/runs").json()["runs"]:
+            assert run["split"] == "train", run
+
+    def test_search_summaries_expose_the_overfitting_flag(self, client) -> None:
+        for run in client.get("/api/optimization/runs").json()["runs"]:
+            for key in (
+                "id", "market", "method", "n_trials", "n_failed", "best_objective",
+                "grid_size", "overfitting_prone", "warnings", "has_validation",
+                "has_robustness",
+            ):
+                assert key in run, f"summary missing {key}"
+
+    def test_search_detail_carries_trials_and_stability(self, client) -> None:
+        runs = client.get("/api/optimization/runs").json()["runs"]
+        if not runs:
+            pytest.skip("no stored optimisation run in this environment")
+
+        body = client.get(f"/api/optimization/runs/{runs[0]['id']}").json()
+        for key in (
+            "param_space", "objective_weights", "trials", "parameter_stability",
+            "validation_selection", "stress_tests", "note",
+        ):
+            assert key in body, f"detail missing {key}"
+
+        assert "TRAIN only" in body["note"]
+        assert "TEST split was not read" in body["note"]
+
+    def test_trials_carry_their_objective_breakdown(self, client) -> None:
+        runs = client.get("/api/optimization/runs").json()["runs"]
+        if not runs:
+            pytest.skip("no stored optimisation run")
+
+        trials = client.get(f"/api/optimization/runs/{runs[0]['id']}").json()["trials"]
+        if not trials:
+            pytest.skip("run stored no trials")
+
+        objective = trials[0]["objective"]
+        for key in ("value", "components", "contributions", "missing", "notes", "fragility"):
+            assert key in objective, f"objective missing {key}"
+
+    def test_validation_selection_records_degradation(self, client) -> None:
+        """Train-to-validation degradation is the number that reveals overfitting."""
+        runs = [r for r in client.get("/api/optimization/runs").json()["runs"] if r["has_validation"]]
+        if not runs:
+            pytest.skip("no validated run stored")
+
+        selection = client.get(f"/api/optimization/runs/{runs[0]['id']}").json()[
+            "validation_selection"
+        ]
+        assert selection["candidates"]
+        for candidate in selection["candidates"]:
+            assert "degradation" in candidate
+            assert "train" in candidate and "validation" in candidate
+        assert any("TEST split has not been read" in n for n in selection["notes"])
+
+    def test_walk_forward_listing_states_it_is_out_of_sample(self, client) -> None:
+        body = client.get("/api/walkforward/runs").json()
+        assert "out-of-sample" in body["note"]
+        assert "frozen before" in body["note"]
+
+    def test_missing_runs_are_404(self, client) -> None:
+        for path in ("/api/optimization/runs/999999", "/api/walkforward/runs/999999"):
+            response = client.get(path)
+            assert response.status_code == 404
+            assert "999999" in response.json()["detail"]

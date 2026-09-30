@@ -113,32 +113,3 @@ export function Portfolio() {
     />
   );
 }
-
-export function Optimization() {
-  return (
-    <ComingLater
-      title="Optimization"
-      phase="4"
-      summary={
-        'Parameter search results, ranked by a configurable objective rather than by return ' +
-        'alone, with walk-forward windows and parameter-stability analysis.'
-      }
-      blockedBy={
-        'The split guard this depends on already exists: the optimiser will only ever read ' +
-        'the TRAIN partition, selection happens on VALIDATION, and TEST stays sealed until a ' +
-        'result is finalised. What is missing is the search itself.'
-      }
-      willShow={[
-        'Parameter search results sorted by a weighted objective, never by return alone',
-        'Train, validation and test performance side by side, each labelled with its partition',
-        'Walk-forward windows: chosen parameters, out-of-sample metrics and trade counts per window',
-        'Parameter-stability heatmaps — a strategy that only works at one exact setting is overfit',
-        'Robustness checks: slippage and commission sensitivity, Monte Carlo trade reshuffling',
-      ]}
-      cli={
-        'python -m app optimize\n  → Not implemented yet. Belongs to Phase 4.\n\n' +
-        'python -m app walk-forward\n  → Not implemented yet. Belongs to Phase 4.'
-      }
-    />
-  );
-}

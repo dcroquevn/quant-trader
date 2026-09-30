@@ -365,8 +365,16 @@ class Backtester:
         trailing_multiple = float(getattr(params, "trailing_stop_atr_multiple", 0.0) or 0.0)
         max_holding = int(getattr(params, "max_holding_bars", 0) or 0)
 
+        # Validate and unpack each frame once. Doing this per bar per symbol was the
+        # dominant cost of a backtest, and it made a parameter search unusable.
+        prepared = {symbol: self.strategy.prepare(frame) for symbol, frame in frames.items()}
+
         for bar_index, timestamp in enumerate(calendar):
-            bars = self._bars_at(frames, timestamp)
+            bars = {
+                symbol: p.rows[p.position_of[timestamp]]
+                for symbol, p in prepared.items()
+                if timestamp in p.position_of
+            }
 
             # ---- 1. Fill orders queued on the previous bar -------------
             for order in pending:
@@ -431,12 +439,12 @@ class Backtester:
             is_last_bar = bar_index == len(calendar) - 1
             if not is_last_bar:
                 for symbol, bar in bars.items():
-                    frame = frames[symbol]
-                    position_index = frame.index.get_loc(timestamp)
+                    frame_prepared = prepared[symbol]
+                    position_index = frame_prepared.position_of[timestamp]
                     holding = symbol in portfolio.positions
 
-                    decision = self.strategy.evaluate(
-                        frame, in_position=holding, index=int(position_index)
+                    decision = self.strategy.evaluate_prepared(
+                        frame_prepared, position_index, in_position=holding
                     )
 
                     if holding and decision.action is Action.SELL:
@@ -479,7 +487,11 @@ class Backtester:
 
         # ---- Close whatever is still open --------------------------------
         final_ts = calendar[-1]
-        final_bars = self._bars_at(frames, final_ts)
+        final_bars = {
+            symbol: p.rows[p.position_of[final_ts]]
+            for symbol, p in prepared.items()
+            if final_ts in p.position_of
+        }
         for symbol in list(portfolio.positions):
             bar = final_bars.get(symbol)
             reference = (

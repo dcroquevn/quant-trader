@@ -353,3 +353,88 @@ class TestDescribe:
         json.dumps(described)
         assert described["name"] == "trend_momentum"
         assert "params" in described
+
+
+# --------------------------------------------------------------------------- #
+# The fast path must agree with the slow one
+# --------------------------------------------------------------------------- #
+
+
+class TestPreparedFramePath:
+    """``prepare`` + ``evaluate_prepared`` is the engine's hot path.
+
+    It exists because per-bar label indexing made a backtest 22x slower than necessary —
+    33 seconds against 1.5 for the same 377 trades — which in turn made a parameter search
+    unusable. A fast path that quietly disagreed with the reference implementation would be
+    far worse than a slow backtest, so the agreement is asserted directly, bar by bar.
+    """
+
+    def test_agrees_with_evaluate_on_every_bar(self, features) -> None:
+        strategy = TrendMomentumStrategy()
+        prepared = strategy.prepare(features)
+
+        for i in range(0, len(features), 7):  # every 7th bar keeps the test quick
+            slow = strategy.evaluate(features, index=i)
+            fast = strategy.evaluate_prepared(prepared, i)
+
+            assert fast.action is slow.action, f"action differs at bar {i}"
+            assert fast.score == pytest.approx(slow.score), f"score differs at bar {i}"
+            assert fast.reasons == slow.reasons, f"reasons differ at bar {i}"
+            if slow.stop_price is None:
+                assert fast.stop_price is None
+            else:
+                assert fast.stop_price == pytest.approx(slow.stop_price)
+
+    def test_agrees_when_holding_a_position(self, features) -> None:
+        strategy = TrendMomentumStrategy()
+        prepared = strategy.prepare(features)
+
+        for i in range(300, len(features), 11):
+            slow = strategy.evaluate(features, in_position=True, index=i)
+            fast = strategy.evaluate_prepared(prepared, i, in_position=True)
+            assert fast.action is slow.action, f"exit decision differs at bar {i}"
+
+    def test_prepare_validates_once_and_still_rejects_leakage(self) -> None:
+        """Moving validation out of the loop must not move it out of existence."""
+        bars = make_bars(400, seed=9)
+        contaminated = compute_features(bars, include_forward=True)
+
+        with pytest.raises(DataLeakageError, match="forward"):
+            TrendMomentumStrategy().prepare(contaminated)
+
+    def test_prepare_still_rejects_a_missing_feature(self, features) -> None:
+        with pytest.raises(ValueError, match="requires feature columns"):
+            TrendMomentumStrategy().prepare(features.drop(columns=["atr_pct_14"]))
+
+    def test_prepare_rejects_an_empty_frame(self) -> None:
+        with pytest.raises(ValueError, match="empty frame"):
+            TrendMomentumStrategy().prepare(pd.DataFrame())
+
+    def test_ready_mask_matches_the_slowest_required_feature(self, features) -> None:
+        strategy = TrendMomentumStrategy()
+        prepared = strategy.prepare(features)
+
+        # ema_200 is the slowest thing this strategy reads, so nothing is ready before it.
+        first_warm = int(features["ema_200"].notna().argmax())
+        assert not any(prepared.ready[:first_warm])
+        assert prepared.ready[-1] is True
+
+    def test_rows_carry_the_bar_columns_the_engine_reads(self, features) -> None:
+        """The engine checks stops against intrabar high and low."""
+        prepared = TrendMomentumStrategy().prepare(features)
+        row = prepared.rows[-1]
+        for column in ("open", "high", "low", "close", "volume", "atr_14"):
+            assert column in row, f"prepared row is missing {column}"
+
+    def test_row_exposes_the_timestamp_as_name(self, features) -> None:
+        """Mirrors the pandas Series attribute, so a strategy reading row.name still works."""
+        prepared = TrendMomentumStrategy().prepare(features)
+        assert prepared.rows[-1].name == features.index[-1]
+
+    def test_evaluate_series_uses_the_prepared_path(self, features) -> None:
+        strategy = TrendMomentumStrategy()
+        table = strategy.evaluate_series(features)
+        prepared = strategy.prepare(features)
+
+        for i in (250, 400, len(features) - 1):
+            assert table["action"].iloc[i] == strategy.evaluate_prepared(prepared, i).action.value

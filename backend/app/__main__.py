@@ -14,6 +14,7 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.panel import Panel
+from rich.progress import BarColumn, Progress, SpinnerColumn, TextColumn, TimeElapsedColumn
 from rich.table import Table
 
 from app.config import ensure_directories, get_settings
@@ -33,6 +34,17 @@ from app.data.provider import Timeframe
 from app.data.registry import provider_cost_table, provider_for_market
 from app.database.base import init_database, session_scope
 from app.backtesting.runner import resolve_window, run_backtest
+from app.optimization.objective import PRESETS, ObjectiveWeights
+from app.optimization.robustness import run_robustness_suite
+from app.optimization.search import run_search, select_on_validation
+from app.optimization.space import DEFAULT_TREND_MOMENTUM_SPACE
+from app.optimization.store import (
+    list_optimization_runs,
+    list_walk_forward_runs,
+    save_search,
+    save_walk_forward,
+)
+from app.optimization.walkforward import run_walk_forward
 from app.indicators.registry import compute_features, latest_features
 from app.strategies.registry import available_strategies, build_strategy, strategy_catalog
 from app.strategies.scanner import scan_all, scan_market
@@ -771,17 +783,509 @@ def _print_backtest(result) -> None:
 
 
 @app.command("optimize")
-def optimize() -> None:
-    """[Phase 4] Search parameters on TRAIN only, select on VALIDATION."""
-    _fail_not_implemented(
-        "4", "parameter search with a train/validation/test split and leakage guards."
+def optimize(
+    market: str = typer.Option("USA", "--market", "-m"),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    method: str = typer.Option("random", "--method", help="grid or random."),
+    trials: int = typer.Option(40, "--trials", "-n", help="Random-search sample size."),
+    seed: int = typer.Option(0, "--seed", help="Random seed, recorded for reproducibility."),
+    preset: str = typer.Option("balanced", "--objective", help=f"One of {sorted(PRESETS)}."),
+    symbols: str = typer.Option(None, "--symbols"),
+    capital: float = typer.Option(None, "--capital"),
+    validate: bool = typer.Option(
+        True, "--validate/--no-validate", help="Re-run the shortlist on VALIDATION."
+    ),
+    top: int = typer.Option(5, "--top", help="Shortlist size for validation."),
+) -> None:
+    """Search parameters on TRAIN, then select among the best on VALIDATION.
+
+    The search never sees validation or test data. There is no flag to change that.
+    """
+    setup_logging()
+    init_database()
+    _banner()
+
+    if preset not in PRESETS:
+        console.print(f"[red]Unknown objective preset {preset!r}. Choose from {sorted(PRESETS)}.[/red]")
+        raise typer.Exit(code=2)
+
+    weights = PRESETS[preset]
+    space = DEFAULT_TREND_MOMENTUM_SPACE
+    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    window = resolve_window("train")
+
+    # A backtest over 15 symbols x 6 years takes roughly 20 seconds, and the fragility
+    # pass costs about two extra backtests per axis for each candidate examined. Saying so
+    # up front beats a user discovering it half an hour in.
+    planned = space.grid_size() if method == "grid" else min(trials, space.grid_size())
+    fragility_cost = 5 * 2 * len(space.axes)
+    total_runs = planned + fragility_cost + (top if validate else 0)
+
+    console.print(
+        f"[dim]strategy:[/dim] {strategy_name}  [dim]market:[/dim] {market}  "
+        f"[dim]objective:[/dim] {preset}  [dim]method:[/dim] {method}\n"
+        f"[dim]searching:[/dim] {window.describe()}  "
+        f"[dim]space:[/dim] {space.grid_size():,} combinations\n"
+        f"[dim]planned work:[/dim] ~{total_runs} backtests "
+        f"({planned} trials + ~{fragility_cost} fragility probes"
+        f"{f' + {top} validation runs' if validate else ''})"
     )
+    if space.is_overfitting_prone:
+        console.print(
+            f"[yellow]The space has {space.grid_size():,} combinations. Best-of-N over a "
+            "space this size owes a lot to the number of attempts; judge the winner on "
+            "validation, not here.[/yellow]"
+        )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Searching TRAIN", total=None)
+
+        def tick(index: int, total: int, _trial) -> None:
+            progress.update(task, total=total, completed=index)
+
+        with session_scope() as session:
+            search = run_search(
+                session,
+                market=market,
+                strategy=strategy_name,
+                space=space,
+                weights=weights,
+                method=method,
+                n_trials=trials,
+                seed=seed,
+                symbols=symbol_list,
+                capital=capital,
+                progress=tick,
+            )
+            selection = (
+                select_on_validation(
+                    session, search, top_n=top, symbols=symbol_list, capital=capital
+                )
+                if validate and search.successful
+                else None
+            )
+            run_id = None
+            if search.successful:
+                run_id = save_search(session, search, selection=selection).id
+
+    _print_search(search, selection)
+    if run_id is not None:
+        console.print(
+            f"[green]Stored as optimization run {run_id}.[/green] "
+            f"[dim]View it with `python -m app runs`, or in the dashboard.[/dim]"
+        )
 
 
 @app.command("walk-forward")
-def walk_forward() -> None:
-    """[Phase 4] Rolling out-of-sample walk-forward analysis."""
-    _fail_not_implemented("4", "walk-forward analysis with per-window parameter freezing.")
+def walk_forward(
+    market: str = typer.Option("USA", "--market", "-m"),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    train_years: int = typer.Option(4, "--train-years"),
+    test_years: int = typer.Option(1, "--test-years"),
+    step_years: int = typer.Option(1, "--step-years"),
+    trials: int = typer.Option(20, "--trials", "-n", help="Search size per window."),
+    seed: int = typer.Option(0, "--seed"),
+    preset: str = typer.Option("balanced", "--objective"),
+    symbols: str = typer.Option(None, "--symbols"),
+    capital: float = typer.Option(None, "--capital"),
+) -> None:
+    """Rolling walk-forward: optimise, freeze parameters, trade the next window, repeat.
+
+    The most honest measurement this project produces. Every test window is out-of-sample
+    with respect to the parameters that traded it.
+    """
+    setup_logging()
+    init_database()
+    _banner()
+
+    if preset not in PRESETS:
+        console.print(f"[red]Unknown objective preset {preset!r}.[/red]")
+        raise typer.Exit(code=2)
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    console.print(
+        f"[dim]strategy:[/dim] {strategy_name}  [dim]market:[/dim] {market}  "
+        f"[dim]windows:[/dim] {train_years}y train / {test_years}y test, step {step_years}y  "
+        f"[dim]trials per window:[/dim] {trials}"
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TextColumn("{task.completed}/{task.total}"),
+        TimeElapsedColumn(),
+        console=console,
+    ) as progress:
+        task = progress.add_task("Walking forward", total=None)
+
+        def tick(index: int, total: int, _window) -> None:
+            progress.update(task, total=total, completed=index)
+
+        with session_scope() as session:
+            result = run_walk_forward(
+                session,
+                market=market,
+                strategy=strategy_name,
+                weights=PRESETS[preset],
+                train_years=train_years,
+                test_years=test_years,
+                step_years=step_years,
+                n_trials=trials,
+                seed=seed,
+                symbols=symbol_list,
+                capital=capital,
+                progress=tick,
+            )
+            run_id = save_walk_forward(session, result).id
+
+    _print_walk_forward(result)
+    console.print(
+        f"[green]Stored as walk-forward run {run_id}.[/green] "
+        f"[dim]View it with `python -m app runs`, or in the dashboard.[/dim]"
+    )
+
+
+@app.command("runs")
+def runs(
+    market: str = typer.Option(None, "--market", "-m"),
+    limit: int = typer.Option(15, "--limit", "-n"),
+) -> None:
+    """List stored optimisation and walk-forward runs.
+
+    Searches and walk-forward studies take tens of minutes, so they are computed by these
+    commands and read back here and by the dashboard, rather than re-run on demand.
+    """
+    setup_logging()
+    init_database()
+
+    with session_scope() as session:
+        searches = list_optimization_runs(session, market=market, limit=limit)
+        studies = list_walk_forward_runs(session, market=market, limit=limit)
+
+    if not searches and not studies:
+        console.print(
+            "[yellow]No stored runs.[/yellow] Produce one with "
+            "[cyan]python -m app optimize[/cyan] or [cyan]python -m app walk-forward[/cyan]."
+        )
+        return
+
+    if searches:
+        table = Table(title="Optimisation runs (TRAIN search)", header_style="bold cyan")
+        for column in ("id", "market", "method", "trials", "best obj", "validated", "stress", "finished"):
+            table.add_column(column, overflow="fold")
+        for row in searches:
+            table.add_row(
+                str(row["id"]),
+                row["market"],
+                row["method"],
+                f"{row['n_trials']}" + (f" ([red]{row['n_failed']} failed[/red])" if row["n_failed"] else ""),
+                _fmt(row["best_objective"], 3),
+                "[green]yes[/green]" if row["has_validation"] else "[dim]no[/dim]",
+                "[green]yes[/green]" if row["has_robustness"] else "[dim]no[/dim]",
+                (row["finished_at"] or "")[:16].replace("T", " "),
+            )
+        console.print(table)
+
+    if studies:
+        table = Table(title="Walk-forward studies (out-of-sample)", header_style="bold cyan")
+        for column in ("id", "market", "windows", "OOS return %", "OOS Sharpe", "OOS maxDD %", "losing", "unstable params"):
+            table.add_column(column, overflow="fold")
+        for row in studies:
+            losing = row["n_losing_windows"]
+            table.add_row(
+                str(row["id"]),
+                row["market"],
+                f"{row['n_usable']}/{row['n_windows']}",
+                _fmt(row["total_return_pct"]),
+                _fmt(row["sharpe"], 2),
+                _fmt(row["max_drawdown_pct"]),
+                f"[red]{losing}[/red]" if losing else "0",
+                ", ".join(row["unstable_parameters"]) or "[dim]none[/dim]",
+            )
+        console.print(table)
+
+
+@app.command("robustness")
+def robustness(
+    market: str = typer.Option("USA", "--market", "-m"),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+    symbols: str = typer.Option(None, "--symbols"),
+    capital: float = typer.Option(None, "--capital"),
+    skip_parameters: bool = typer.Option(
+        False, "--skip-parameters", help="Skip the neighbour sweep, which is the slow part."
+    ),
+) -> None:
+    """Stress-test a configuration: parameters, costs, delay, sequence and concentration."""
+    setup_logging()
+    init_database()
+    _banner()
+
+    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    console.print(
+        f"[dim]strategy:[/dim] {strategy_name}  [dim]market:[/dim] {market}  "
+        f"[dim]window:[/dim] {resolve_window('train').describe()}"
+    )
+
+    with session_scope() as session:
+        report = run_robustness_suite(
+            session,
+            market=market,
+            strategy=strategy_name,
+            symbols=symbol_list,
+            capital=capital,
+            include_parameter_sensitivity=not skip_parameters,
+        )
+
+    _print_robustness(report)
+
+
+# --------------------------------------------------------------------------- #
+# Phase 4 printing
+# --------------------------------------------------------------------------- #
+
+
+def _print_search(search, selection) -> None:
+    for warning in search.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    if not search.successful:
+        console.print("[red]No trial produced a usable result.[/red]")
+        raise typer.Exit(code=1)
+
+    table = Table(
+        title=f"Top configurations on TRAIN ({len(search.successful)}/{len(search.trials)} usable)",
+        header_style="bold cyan",
+    )
+    for column in ("#", "objective", "return %", "Sharpe", "maxDD %", "trades", "fragility", "params"):
+        table.add_column(column, overflow="fold")
+
+    for rank, trial in enumerate(search.ranked(10), start=1):
+        fragility = trial.score.fragility
+        table.add_row(
+            str(rank),
+            _fmt(trial.score.value, 3),
+            _fmt(trial.metrics.get("total_return_pct")),
+            _fmt(trial.metrics.get("sharpe"), 2),
+            _fmt(trial.metrics.get("max_drawdown_pct")),
+            str(trial.metrics.get("n_trades", 0)),
+            "[dim]-[/dim]" if fragility is None else
+            (f"[red]{fragility:.2f}[/red]" if fragility > 0.5 else f"{fragility:.2f}"),
+            ", ".join(f"{k}={v}" for k, v in sorted(trial.params.items())),
+        )
+    console.print(table)
+
+    stability = search.parameter_stability()
+    if stability.get("available"):
+        stab = Table(title="Parameter stability across the top decile", header_style="bold cyan")
+        for column in ("parameter", "distinct", "concentration", "modal", "range"):
+            stab.add_column(column)
+        for name, entry in sorted(stability["parameters"].items()):
+            span = (
+                f"{entry['min']} .. {entry['max']}"
+                if "min" in entry
+                else "[dim]-[/dim]"
+            )
+            concentration = entry["concentration"]
+            stab.add_row(
+                name,
+                str(entry["distinct_values"]),
+                f"[red]{concentration:.0%}[/red]" if concentration < 0.4 else f"{concentration:.0%}",
+                str(entry["modal_value"]),
+                span,
+            )
+        console.print(stab)
+        if stability.get("note"):
+            console.print(f"[yellow]{stability['note']}[/yellow]")
+
+    if selection is None:
+        console.print(
+            "[yellow]Validation was skipped, so the winner above is the most overfitted "
+            "candidate by construction -- it was chosen on the data it was fitted to.[/yellow]"
+        )
+        return
+
+    val = Table(title="Shortlist re-run on VALIDATION", header_style="bold cyan")
+    for column in ("#", "train obj", "valid obj", "degradation", "valid return %", "valid Sharpe", "trades"):
+        val.add_column(column, overflow="fold")
+
+    for rank, candidate in enumerate(selection["candidates"], start=1):
+        validation = candidate.get("validation")
+        degradation = candidate.get("degradation")
+        val.add_row(
+            str(rank),
+            _fmt(candidate["train"]["objective"], 3),
+            "[red]failed[/red]" if validation is None else _fmt(validation["objective"], 3),
+            "[dim]-[/dim]" if degradation is None else
+            (f"[red]{degradation:+.3f}[/red]" if degradation > 1.0 else f"{degradation:+.3f}"),
+            "[dim]-[/dim]" if validation is None else _fmt(validation.get("total_return_pct")),
+            "[dim]-[/dim]" if validation is None else _fmt(validation.get("sharpe"), 2),
+            "[dim]-[/dim]" if validation is None else str(validation.get("n_trades", 0)),
+        )
+    console.print(val)
+
+    recommended = selection.get("recommended")
+    if recommended:
+        console.print(
+            Panel(
+                "[bold]Recommended by validation[/bold]\n\n"
+                + "\n".join(f"  {k} = {v}" for k, v in sorted(recommended["params"].items()))
+                + f"\n\nvalidation objective {recommended['validation']['objective']:.3f}"
+                + f"  ·  return {_fmt(recommended['validation'].get('total_return_pct'))}%"
+                + f"  ·  Sharpe {_fmt(recommended['validation'].get('sharpe'), 2)}",
+                expand=False,
+            )
+        )
+    else:
+        console.print("[red]No candidate produced a usable validation result.[/red]")
+
+    for note in selection["notes"]:
+        console.print(f"[dim]- {note}[/dim]")
+
+
+def _print_walk_forward(result) -> None:
+    for warning in result.warnings:
+        console.print(f"[yellow]{warning}[/yellow]")
+
+    table = Table(
+        title=f"Walk-forward windows ({len(result.successful)}/{len(result.windows)} usable)",
+        header_style="bold cyan",
+    )
+    for column in ("#", "test period", "OOS return %", "OOS Sharpe", "OOS maxDD %", "trades", "frozen params"):
+        table.add_column(column, overflow="fold")
+
+    for window_result in result.windows:
+        window = window_result.window
+        if not window_result.ok:
+            table.add_row(
+                str(window.index),
+                f"{window.test_start} .. {window.test_end}",
+                f"[red]{window_result.error[:40]}[/red]", "", "", "", "",
+            )
+            continue
+        test = window_result.test_metrics
+        ret = test.get("total_return_pct")
+        table.add_row(
+            str(window.index),
+            f"{window.test_start} .. {window.test_end}",
+            ("[green]" if (ret or 0) > 0 else "[red]") + _fmt(ret) + ("[/green]" if (ret or 0) > 0 else "[/red]"),
+            _fmt(test.get("sharpe"), 2),
+            _fmt(test.get("max_drawdown_pct")),
+            str(test.get("n_trades", 0)),
+            ", ".join(f"{k}={v}" for k, v in sorted(window_result.chosen_params.items())),
+        )
+    console.print(table)
+
+    aggregate = result.aggregate_metrics
+    if aggregate:
+        console.print(
+            Panel(
+                "[bold]Stitched out-of-sample result[/bold]  "
+                "[dim](the only honest headline here)[/dim]\n\n"
+                f"  total return   {_fmt(aggregate.get('total_return_pct'))}%\n"
+                f"  CAGR           {_fmt(aggregate.get('cagr_pct'))}%\n"
+                f"  Sharpe         {_fmt(aggregate.get('sharpe'), 3)}\n"
+                f"  Sortino        {_fmt(aggregate.get('sortino'), 3)}\n"
+                f"  max drawdown   {_fmt(aggregate.get('max_drawdown_pct'))}%\n"
+                f"  volatility     {_fmt(aggregate.get('annualised_volatility_pct'))}%\n"
+                f"  trades         {aggregate.get('n_trades', 0)}  across "
+                f"{aggregate.get('n_windows', 0)} windows",
+                expand=False,
+            )
+        )
+
+    stability = result.parameter_stability()
+    if stability.get("available"):
+        stab = Table(title="Parameter choices across windows", header_style="bold cyan")
+        stab.add_column("parameter")
+        stab.add_column("per window", overflow="fold")
+        stab.add_column("consistency")
+        for name, entry in sorted(stability["parameters"].items()):
+            concentration = entry["concentration"]
+            stab.add_row(
+                name,
+                ", ".join(str(v) for v in entry["values_by_window"]),
+                f"[red]{concentration:.0%}[/red]" if concentration < 0.5 else f"{concentration:.0%}",
+            )
+        console.print(stab)
+        if stability.get("note"):
+            console.print(f"[yellow]{stability['note']}[/yellow]")
+
+    console.print(f"[dim]{result.to_dict()['interpretation']}[/dim]")
+
+
+def _print_robustness(report) -> None:
+    console.print(
+        Panel(
+            f"[bold]{report.strategy} on {report.market}[/bold]\n\n"
+            f"baseline: return {_fmt(report.baseline.get('total_return_pct'))}%  ·  "
+            f"Sharpe {_fmt(report.baseline.get('sharpe'), 2)}  ·  "
+            f"maxDD {_fmt(report.baseline.get('max_drawdown_pct'))}%  ·  "
+            f"{report.baseline.get('n_trades', 0)} trades",
+            expand=False,
+        )
+    )
+
+    for name, check in report.checks.items():
+        label = name.replace("_", " ").title()
+        if not check.get("available"):
+            console.print(f"[dim]{label}: not available -- {check.get('reason')}[/dim]")
+            continue
+
+        verdict = check.get("verdict", "")
+        colour = "red" if verdict.startswith("FRAGILE") else "green"
+        console.print(f"\n[bold]{label}[/bold]")
+        console.print(f"  [{colour}]{verdict}[/{colour}]")
+
+        if name == "parameter_sensitivity":
+            console.print(
+                f"  [dim]{check['n_neighbours']} neighbours · "
+                f"median return {_fmt(check['neighbour_return_median'])}% · "
+                f"range {_fmt(check['neighbour_return_min'])}% .. "
+                f"{_fmt(check['neighbour_return_max'])}%[/dim]"
+            )
+        elif name.endswith("sensitivity") and "rows" in check:
+            console.print(
+                f"  [dim]breakeven at {check.get('breakeven_multiplier') or 'beyond tested range'}"
+                f"x the assumed cost (baseline round trip "
+                f"{check.get('baseline_round_trip_pct')}%)[/dim]"
+            )
+        elif name == "monte_carlo_reshuffle":
+            simulated = check["simulated_drawdown"]
+            console.print(
+                f"  [dim]actual maxDD {check['actual_max_drawdown_pct']}% sits at the "
+                f"{check['actual_percentile']}th percentile; reorderings ranged "
+                f"{simulated['worst']}% .. {simulated['p95']}%[/dim]"
+            )
+        elif name == "random_trade_removal":
+            for row in check["rows"]:
+                console.print(
+                    f"  [dim]remove {row['fraction_removed']:.0%}: median "
+                    f"{row['median_return_pct']}%, unprofitable "
+                    f"{row['share_unprofitable']:.0%} of the time[/dim]"
+                )
+
+    console.print()
+    overall = report.verdicts[0] if report.verdicts else ""
+    console.print(
+        Panel(
+            overall,
+            title="[red]Verdict[/red]" if report.is_fragile else "[green]Verdict[/green]",
+            expand=False,
+        )
+    )
+    console.print(Panel(
+        "\n".join(f"- {c}" for c in report.caveats),
+        title="[yellow]What these checks cannot tell you[/yellow]",
+        expand=False,
+    ))
 
 
 @app.command("project")

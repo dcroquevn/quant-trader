@@ -17,7 +17,8 @@ import { Badge } from './components/ui';
 import { api } from './lib/api';
 import AssetPage from './pages/AssetPage';
 import Backtest from './pages/Backtest';
-import { Optimization, Portfolio } from './pages/ComingLater';
+import { Portfolio } from './pages/ComingLater';
+import Optimization from './pages/Optimization';
 import DataHealth from './pages/DataHealth';
 import Limitations from './pages/Limitations';
 import Overview from './pages/Overview';
@@ -30,7 +31,7 @@ const NAV = [
   { to: '/backtest', label: 'Backtest', icon: FlaskConical },
   { to: '/universe', label: 'Universe', icon: List },
   { to: '/portfolio', label: 'Portfolio', icon: Briefcase, phase: 6 },
-  { to: '/optimization', label: 'Optimization', icon: SlidersHorizontal, phase: 4 },
+  { to: '/optimization', label: 'Optimization', icon: SlidersHorizontal },
   { to: '/data-health', label: 'Data health', icon: Database },
   { to: '/limitations', label: 'Limitations', icon: AlertTriangle },
 ];

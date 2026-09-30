@@ -41,6 +41,13 @@ from app.database.base import init_database, session_scope
 from app.backtesting.runner import resolve_window, run_backtest
 from app.core.exceptions import DataLeakageError
 from app.indicators.registry import compute_features, latest_features
+from app.optimization.objective import PRESETS
+from app.optimization.store import (
+    get_optimization_run,
+    get_walk_forward_run,
+    list_optimization_runs,
+    list_walk_forward_runs,
+)
 from app.strategies.registry import build_strategy, strategy_catalog
 from app.strategies.scanner import scan_all, scan_market
 
@@ -561,6 +568,79 @@ def splits() -> dict[str, Any]:
             }
         )
     return {"splits": out}
+
+
+@app.get("/api/objective-presets")
+def objective_presets() -> dict[str, Any]:
+    """The named objective weightings a search can be run with."""
+    return {
+        "presets": {name: weights.to_dict() for name, weights in PRESETS.items()},
+        "note": (
+            "Weights scale normalised components, so they are comparable to each other. "
+            "The objective value itself is an arbitrary scale, meaningful only when "
+            "comparing configurations scored with the same weights -- it is not a return, "
+            "a probability or a quality rating."
+        ),
+    }
+
+
+@app.get("/api/optimization/runs")
+def optimization_runs(
+    market: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=200),
+) -> dict[str, Any]:
+    """Stored parameter searches, newest first.
+
+    Read-only. A search takes tens of minutes, so it is produced by
+    ``python -m app optimize`` and read here — an endpoint that ran one would time out, or
+    silently re-run an hour of computation on every page load.
+    """
+    with session_scope() as session:
+        runs = list_optimization_runs(session, market=market, limit=limit)
+    return {
+        "runs": runs,
+        "count": len(runs),
+        "how_to_create": "python -m app optimize --market USA --trials 40",
+    }
+
+
+@app.get("/api/optimization/runs/{run_id}")
+def optimization_run(run_id: int) -> dict[str, Any]:
+    """One search in full: trials, parameter stability, validation and stress tests."""
+    with session_scope() as session:
+        run = get_optimization_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No optimization run with id {run_id}")
+    return run
+
+
+@app.get("/api/walkforward/runs")
+def walk_forward_runs(
+    market: str | None = Query(None),
+    limit: int = Query(25, ge=1, le=200),
+) -> dict[str, Any]:
+    """Stored walk-forward studies, newest first."""
+    with session_scope() as session:
+        runs = list_walk_forward_runs(session, market=market, limit=limit)
+    return {
+        "runs": runs,
+        "count": len(runs),
+        "how_to_create": "python -m app walk-forward --market USA",
+        "note": (
+            "Walk-forward figures are out-of-sample by construction: each window's "
+            "parameters were frozen before that window's data was seen."
+        ),
+    }
+
+
+@app.get("/api/walkforward/runs/{run_id}")
+def walk_forward_run(run_id: int) -> dict[str, Any]:
+    """One study in full: every window, the stitched curve and parameter stability."""
+    with session_scope() as session:
+        run = get_walk_forward_run(session, run_id)
+    if run is None:
+        raise HTTPException(status_code=404, detail=f"No walk-forward run with id {run_id}")
+    return run
 
 
 @app.get("/api/limitations")

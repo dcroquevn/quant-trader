@@ -32,7 +32,15 @@ import pandas as pd
 
 from app.indicators.forward import assert_no_forward_columns
 
-__all__ = ["Action", "Decision", "StrategyParams", "Strategy", "ComponentScore"]
+__all__ = [
+    "Action",
+    "Decision",
+    "StrategyParams",
+    "Strategy",
+    "ComponentScore",
+    "BarRow",
+    "PreparedFrame",
+]
 
 
 class Action(str, Enum):
@@ -129,6 +137,54 @@ class StrategyParams:
         return cls(**data)
 
 
+def _is_missing(value: Any) -> bool:
+    """True for None or NaN. Cheaper than pd.isna on a scalar in a hot loop."""
+    if value is None:
+        return True
+    return isinstance(value, float) and value != value
+
+
+class BarRow(dict):
+    """One bar's values as a plain dict, with the timestamp on ``.name``.
+
+    Stands in for a ``pandas.Series`` in the hot path. A Series lookup goes through label
+    indexing; a dict lookup is a hash. With 600,000 lookups in a single backtest that
+    difference dominated the whole run. ``.name`` mirrors the Series attribute so a
+    strategy reading ``row.name`` works either way.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, values: dict[str, Any], name: Any = None) -> None:
+        super().__init__(values)
+        self.name = name
+
+
+@dataclass(slots=True)
+class PreparedFrame:
+    """A frame validated once and unpacked into per-bar dicts.
+
+    Built by :meth:`Strategy.prepare`. Holds:
+
+    ``rows``
+        One :class:`BarRow` per bar, carrying the bar columns plus the strategy's required
+        features. Built with a single vectorised pass rather than a Series per access.
+
+    ``ready``
+        Whether every required feature is non-null on that bar. Computed as one vectorised
+        mask, replacing a per-bar label reindex that was the single largest cost in the
+        engine.
+    """
+
+    index: pd.DatetimeIndex
+    rows: list["BarRow"]
+    ready: list[bool]
+    position_of: dict[Any, int]
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+
 class Strategy(abc.ABC):
     """Base class for every strategy.
 
@@ -163,8 +219,13 @@ class Strategy(abc.ABC):
         """
 
     @abc.abstractmethod
-    def _decide(self, row: pd.Series, in_position: bool) -> Decision:
-        """Decide for one bar. ``row`` holds that bar's features only."""
+    def _decide(self, row: "BarRow | pd.Series", in_position: bool) -> Decision:
+        """Decide for one bar.
+
+        ``row`` is a mapping of that bar's values, keyed by column name, with the timestamp
+        on ``.name``. It is a :class:`BarRow` on the engine's path and a ``pandas.Series``
+        when a caller uses :meth:`evaluate` directly; both support ``row[key]``.
+        """
 
     # ------------------------------------------------------------------ #
     # Public API
@@ -179,24 +240,47 @@ class Strategy(abc.ABC):
                 "Run app.indicators.registry.compute_features() on the bars first."
             )
 
-    def evaluate(
-        self, frame: pd.DataFrame, *, in_position: bool = False, index: int = -1
-    ) -> Decision:
-        """Decide for the bar at ``index`` (default: the most recent).
+    def prepare(self, frame: pd.DataFrame) -> PreparedFrame:
+        """Validate ``frame`` once and unpack it for repeated evaluation.
 
-        Only the row at ``index`` is passed to :meth:`_decide`, which makes reaching
-        forward structurally awkward rather than merely discouraged.
+        Everything the per-bar path used to redo — the leakage check, the missing-feature
+        check, and the "are the indicators warm" test — happens here, once, vectorised.
+        The engine calls this per symbol at the start of a run and then
+        :meth:`evaluate_prepared` per bar.
         """
         if frame.empty:
-            # Checked before column validation: an empty frame has no columns at all, so
-            # the missing-feature message would list every requirement and bury the
-            # actual problem.
             raise ValueError(f"{self.name} cannot evaluate an empty frame")
         self._validate(frame)
 
-        row = frame.iloc[index]
-        if row[list(self.required_features)].isna().any():
-            unready = [c for c in self.required_features if pd.isna(row[c])]
+        needed = list(self.required_features)
+        # One vectorised pass instead of a label reindex per bar.
+        ready_mask = frame[needed].notna().all(axis=1)
+
+        # Carry the bar columns as well: the engine and the exit logic read open/high/low.
+        columns = list(dict.fromkeys([*needed, "open", "high", "low", "close", "volume", "atr_14"]))
+        present = [c for c in columns if c in frame.columns]
+        records = frame[present].to_dict("records")
+
+        stamps = list(frame.index)
+        return PreparedFrame(
+            index=frame.index,
+            rows=[BarRow(record, name=stamp) for record, stamp in zip(records, stamps)],
+            ready=[bool(v) for v in ready_mask.to_numpy()],
+            position_of={stamp: i for i, stamp in enumerate(stamps)},
+        )
+
+    def evaluate_prepared(
+        self, prepared: PreparedFrame, index: int, *, in_position: bool = False
+    ) -> Decision:
+        """Decide for one bar of an already-prepared frame.
+
+        The fast path. Identical in result to :meth:`evaluate`, which
+        :mod:`tests.test_strategies` asserts directly — a fast path that quietly disagreed
+        with the slow one would be worse than a slow backtest.
+        """
+        if not prepared.ready[index]:
+            row = prepared.rows[index]
+            unready = [c for c in self.required_features if _is_missing(row.get(c))]
             return Decision(
                 action=Action.HOLD,
                 score=0.0,
@@ -205,7 +289,19 @@ class Strategy(abc.ABC):
                     f"{' ...' if len(unready) > 5 else ''}",
                 ),
             )
-        return self._decide(row, in_position)
+        return self._decide(prepared.rows[index], in_position)
+
+    def evaluate(
+        self, frame: pd.DataFrame, *, in_position: bool = False, index: int = -1
+    ) -> Decision:
+        """Decide for the bar at ``index`` (default: the most recent).
+
+        Convenience wrapper over :meth:`prepare` and :meth:`evaluate_prepared`, for a
+        one-off decision. The engine prepares once and loops instead.
+        """
+        prepared = self.prepare(frame)
+        position = index if index >= 0 else len(prepared) + index
+        return self.evaluate_prepared(prepared, position, in_position=in_position)
 
     def evaluate_series(self, frame: pd.DataFrame) -> pd.DataFrame:
         """Decide for every bar, vectorised where the subclass allows it.
@@ -215,9 +311,9 @@ class Strategy(abc.ABC):
         Note this evaluates each bar *as if flat*; a real position's exit logic
         depends on entry price, which only the backtester knows.
         """
-        self._validate(frame)
+        prepared = self.prepare(frame)
         decisions = [
-            self.evaluate(frame, in_position=False, index=i) for i in range(len(frame))
+            self.evaluate_prepared(prepared, i, in_position=False) for i in range(len(prepared))
         ]
         return pd.DataFrame(
             {
