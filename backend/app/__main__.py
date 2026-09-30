@@ -101,7 +101,9 @@ def _banner() -> None:
     console.print(
         Panel(
             "[bold cyan]QUANT TRADER[/bold cyan]  "
-            f"[dim]markets:[/dim] {', '.join(all_market_codes())}  "
+            # Regions, not markets. The banner used to print "markets: CHILE, USA", which
+            # was true and misleading: CHILE has no tradable instruments left in it.
+            f"[dim]regions:[/dim] {', '.join(_SHORT_REGION[r] for r in ALL_REGIONS)}  "
             f"[dim]mode:[/dim] [green]{mode}[/green]  "
             f"[dim]live trading:[/dim] [red]disabled[/red]",
             expand=False,
@@ -112,6 +114,40 @@ def _banner() -> None:
 # --------------------------------------------------------------------------- #
 # Phase 1 -- implemented
 # --------------------------------------------------------------------------- #
+
+
+
+_SHORT_REGION = {
+    "United States": "US",
+    "Chile": "Chile",
+    "Emerging Asia": "Asia",
+}
+"""Column-width abbreviations for the region names. Display only."""
+
+
+def _resolve_symbols(symbols: str | None, region: str | None) -> "list[str] | None":
+    """Turn ``--symbols`` or ``--region`` into a symbol list.
+
+    ``None`` means the whole universe. Both flags together is an error rather than a merge or a
+    silent precedence: a caller who passed both meant one of them, and guessing which would
+    produce a run they did not ask for.
+    """
+    if symbols and region:
+        raise typer.BadParameter(
+            "Pass --symbols or --region, not both. --region expands to that group's full "
+            "instrument list, so combining them would silently discard one."
+        )
+    if symbols:
+        return [s.strip().upper() for s in symbols.split(",") if s.strip()]
+    if region:
+        try:
+            specs = universe_for_region(region)
+        except KeyError as exc:
+            raise typer.BadParameter(
+                f"Unknown region {region!r}. Known: {', '.join(ALL_REGIONS)}"
+            ) from exc
+        return [spec.symbol for spec in specs]
+    return None
 
 
 @app.command("init-db")
@@ -647,6 +683,12 @@ def strategies() -> None:
 @app.command("scan")
 def scan(
     market: str = typer.Option(None, "--market", "-m", help="USA, CHILE, or omit for both."),
+    region: str = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help='Exposure group: "United States", "Chile" or "Emerging Asia".',
+    ),
     strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
     action: str = typer.Option("ALL", "--action", "-a", help="BUY, SELL, HOLD or ALL."),
     min_score: float = typer.Option(0.0, "--min-score"),
@@ -660,13 +702,17 @@ def scan(
     _banner()
 
     strategy = build_strategy(strategy_name)
+    scoped = _resolve_symbols(None, region)
 
     with session_scope() as session:
-        result = (
-            scan_market(session, strategy, market)
-            if market
-            else scan_all(session, strategy)
-        )
+        if scoped is not None:
+            # A region is scanned through its market, since every instrument in all three
+            # trades on the same one. The symbol list is what narrows it.
+            result = scan_market(session, strategy, "USA", symbols=scoped)
+        elif market:
+            result = scan_market(session, strategy, market)
+        else:
+            result = scan_all(session, strategy)
 
     rows = result.filtered(
         market=market, action=action, min_score=min_score, tradable_only=tradable_only
@@ -679,7 +725,7 @@ def scan(
         title=f"Scanner -- {strategy.name} ({len(rows)} of {len(result.rows)} shown)",
         header_style="bold cyan",
     )
-    for column in ("mkt", "symbol", "price", "signal", "score", "RSI", "rVol",
+    for column in ("region", "symbol", "price", "signal", "score", "RSI", "rVol",
                    "ATR%", "20d", "R:R", "status"):
         table.add_column(column, overflow="fold")
 
@@ -696,8 +742,11 @@ def scan(
             flags.append(f"[yellow]-{row.carried_forward_dropped}fab[/yellow]")
         status = " ".join(flags) if flags else "[green]ok[/green]"
 
+        # The region, not the market: every row's market is "USA" now, which is a column
+        # of no information on a table meant to be read at a glance. Abbreviated because
+        # "Emerging Asia" wraps onto four lines in a column this narrow.
         table.add_row(
-            row.market[:3],
+            _SHORT_REGION.get(find_asset(row.symbol, row.market).region, "?"),
             row.symbol,
             _fmt(row.price, 2),
             f"[{colour}]{row.action}[/{colour}]",
@@ -730,6 +779,13 @@ def backtest(
     start: str = typer.Option(None, "--start", help="YYYY-MM-DD."),
     end: str = typer.Option(None, "--end", help="YYYY-MM-DD."),
     symbols: str = typer.Option(None, "--symbols", help="Comma-separated canonical symbols."),
+    region: str = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help='Exposure group: "United States", "Chile" or "Emerging Asia". Also picks the '
+        "benchmark, so a run scoped to one region gets a meaningful comparison.",
+    ),
     capital: float = typer.Option(None, "--capital"),
     finalising: bool = typer.Option(
         False,
@@ -743,7 +799,7 @@ def backtest(
     _banner()
 
     strategy = build_strategy(strategy_name)
-    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    symbol_list = _resolve_symbols(symbols, region)
 
     try:
         window = resolve_window(
@@ -899,6 +955,13 @@ def optimize(
     seed: int = typer.Option(0, "--seed", help="Random seed, recorded for reproducibility."),
     preset: str = typer.Option("balanced", "--objective", help=f"One of {sorted(PRESETS)}."),
     symbols: str = typer.Option(None, "--symbols"),
+    region: str = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help='Exposure group: "United States", "Chile" or "Emerging Asia". Also picks the '
+        "benchmark, so a run scoped to one region gets a meaningful comparison.",
+    ),
     capital: float = typer.Option(None, "--capital"),
     validate: bool = typer.Option(
         True, "--validate/--no-validate", help="Re-run the shortlist on VALIDATION."
@@ -919,7 +982,7 @@ def optimize(
 
     weights = PRESETS[preset]
     space = DEFAULT_TREND_MOMENTUM_SPACE
-    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    symbol_list = _resolve_symbols(symbols, region)
     window = resolve_window("train")
 
     # A backtest over 15 symbols x 6 years takes roughly 20 seconds, and the fragility
@@ -1002,6 +1065,13 @@ def walk_forward(
     seed: int = typer.Option(0, "--seed"),
     preset: str = typer.Option("balanced", "--objective"),
     symbols: str = typer.Option(None, "--symbols"),
+    region: str = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help='Exposure group: "United States", "Chile" or "Emerging Asia". Also picks the '
+        "benchmark, so a run scoped to one region gets a meaningful comparison.",
+    ),
     capital: float = typer.Option(None, "--capital"),
 ) -> None:
     """Rolling walk-forward: optimise, freeze parameters, trade the next window, repeat.
@@ -1017,7 +1087,7 @@ def walk_forward(
         console.print(f"[red]Unknown objective preset {preset!r}.[/red]")
         raise typer.Exit(code=2)
 
-    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    symbol_list = _resolve_symbols(symbols, region)
     console.print(
         f"[dim]strategy:[/dim] {strategy_name}  [dim]market:[/dim] {market}  "
         f"[dim]windows:[/dim] {train_years}y train / {test_years}y test, step {step_years}y  "
@@ -1126,6 +1196,13 @@ def robustness(
     market: str = typer.Option("USA", "--market", "-m"),
     strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
     symbols: str = typer.Option(None, "--symbols"),
+    region: str = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help='Exposure group: "United States", "Chile" or "Emerging Asia". Also picks the '
+        "benchmark, so a run scoped to one region gets a meaningful comparison.",
+    ),
     capital: float = typer.Option(None, "--capital"),
     skip_parameters: bool = typer.Option(
         False, "--skip-parameters", help="Skip the neighbour sweep, which is the slow part."
@@ -1136,7 +1213,7 @@ def robustness(
     init_database()
     _banner()
 
-    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    symbol_list = _resolve_symbols(symbols, region)
     console.print(
         f"[dim]strategy:[/dim] {strategy_name}  [dim]market:[/dim] {market}  "
         f"[dim]window:[/dim] {resolve_window('train').describe()}"
@@ -2020,6 +2097,13 @@ def report(
     start: str = typer.Option(None, "--start"),
     end: str = typer.Option(None, "--end"),
     symbols: str = typer.Option(None, "--symbols"),
+    region: str = typer.Option(
+        None,
+        "--region",
+        "-r",
+        help='Exposure group: "United States", "Chile" or "Emerging Asia". Also picks the '
+        "benchmark, so a run scoped to one region gets a meaningful comparison.",
+    ),
     capital: float = typer.Option(None, "--capital"),
     finalising: bool = typer.Option(False, "--finalising"),
     output: str = typer.Option(None, "--output", "-o", help="Explicit output file path."),
@@ -2036,7 +2120,7 @@ def report(
     _banner()
 
     strategy = build_strategy(strategy_name)
-    symbol_list = [s.strip().upper() for s in symbols.split(",")] if symbols else None
+    symbol_list = _resolve_symbols(symbols, region)
 
     try:
         with session_scope() as session:
