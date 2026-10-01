@@ -1733,6 +1733,8 @@ def record_buy(
             "in .github/workflows/ so it runs without your computer on.[/dim]"
         )
 
+    _sync_positions_file()
+
 
 @app.command("sell")
 def record_sell(
@@ -1776,6 +1778,8 @@ def record_sell(
 
         performance = realised_performance(session)
         console.print(f"\n[bold]{performance['evidence']}[/bold]")
+
+    _sync_positions_file()
 
 
 @app.command("holdings")
@@ -2340,6 +2344,93 @@ def _write_market_summary(session, strategy_name: str) -> None:
 
     with open(target, "a", encoding="utf-8") as handle:
         handle.write("\n".join(lines) + "\n")
+
+
+@app.command("positions-export")
+def positions_export(
+    output: str = typer.Option(None, "--output", "-o", help="Default: data/positions.json"),
+) -> None:
+    """Write the holdings to a small portable file.
+
+    Everything else in the database can be re-downloaded in minutes; these cannot, because no
+    provider knows what you bought. Commit the result so a cache eviction on the scheduled
+    runner cannot lose it.
+    """
+    import json
+
+    from app.portfolio.holdings import POSITIONS_FILE, export_positions
+
+    init_database()
+    target = Path(output or POSITIONS_FILE)
+    target.parent.mkdir(parents=True, exist_ok=True)
+
+    with session_scope() as session:
+        rows = export_positions(session)
+
+    target.write_text(json.dumps(rows, indent=1, sort_keys=True) + "\n", encoding="utf-8")
+    console.print(f"[green]Wrote {len(rows)} position(s)[/green] to [cyan]{target}[/cyan]")
+    if rows:
+        console.print(
+            "[dim]Commit this file. It is the only copy of your positions that survives the "
+            "Actions cache being evicted.[/dim]"
+        )
+
+
+@app.command("positions-import")
+def positions_import(
+    source: str = typer.Option(None, "--source", "-s", help="Default: data/positions.json"),
+) -> None:
+    """Recreate holdings from a positions file. Safe to run repeatedly.
+
+    Idempotent: a holding already present, matched on symbol and entry date, is skipped. The
+    scheduled job runs this every time, and without that a week of runs would turn one position
+    into seven and make every P&L figure derived from them wrong.
+    """
+    import json
+
+    from app.portfolio.holdings import POSITIONS_FILE, import_positions
+
+    init_database()
+    source_path = Path(source or POSITIONS_FILE)
+    if not source_path.exists():
+        console.print(f"[dim]No positions file at {source_path}; nothing to import.[/dim]")
+        return
+
+    rows = json.loads(source_path.read_text(encoding="utf-8"))
+    with session_scope() as session:
+        result = import_positions(session, rows)
+
+    console.print(
+        f"[green]{result['added']} added[/green], {result['skipped']} already present"
+        + (f", [red]{result['failed']} failed[/red]" if result["failed"] else "")
+    )
+
+
+def _sync_positions_file() -> None:
+    """Refresh data/positions.json after a trade is recorded.
+
+    Automatic, because a file you have to remember to regenerate is stale exactly when it
+    matters. Failures are reported and swallowed: the trade is already recorded, and losing the
+    export is not worth losing that.
+    """
+    import json
+
+    from app.portfolio.holdings import POSITIONS_FILE, export_positions
+
+    try:
+        with session_scope() as session:
+            rows = export_positions(session)
+        target = Path(POSITIONS_FILE)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(
+            json.dumps(rows, indent=1, sort_keys=True) + "\n", encoding="utf-8"
+        )
+        console.print(f"[dim]Updated {target} ({len(rows)} position(s)) -- commit it.[/dim]")
+    except OSError as exc:
+        console.print(
+            f"[yellow]Could not update the positions file: {exc}[/yellow] The trade is "
+            "recorded; run `python -m app positions-export` to retry."
+        )
 
 @app.command("serve")
 def serve(

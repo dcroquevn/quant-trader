@@ -1,0 +1,161 @@
+# Record a purchase or a sale from your phone.
+#
+# WHY THIS EXISTS
+#   `python -m app buy` needs a terminal, and the moment you most want to record a trade is the
+#   moment you just made one -- in a broker's app, away from the computer. An unrecorded position
+#   is an unwatched position, so the friction is not cosmetic: it is the difference between the
+#   daily check covering your portfolio and silently covering nothing.
+#
+#   GitHub's mobile app can run a workflow with inputs. That turns this into a form on your phone.
+#
+# WHAT IT DOES NOT DO
+#   It does not buy or sell anything, and it cannot. There is no broker connection anywhere in
+#   this project. You trade in your broker's app; this records what you did so the exit rule can
+#   be watched against it.
+#
+# WHERE THE POSITIONS LIVE
+#   In `data/positions.json`, committed back to the repository by this workflow. Not in the
+#   Actions cache: that is evicted after about a week of disuse, and while the price history
+#   re-downloads in minutes, nothing can rebuild what you bought. A few hundred bytes of JSON in
+#   git is the durable copy.
+
+name: Record a trade
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'What you did'
+        type: choice
+        options: [buy, sell]
+        default: buy
+        required: true
+      symbol:
+        description: 'Symbol for a buy (e.g. SQM), or the holding id for a sell (e.g. 3)'
+        type: string
+        required: true
+      quantity:
+        description: 'Shares bought. Ignored on a sell.'
+        type: string
+        default: '0'
+      price:
+        description: 'Price per share you actually paid or received'
+        type: string
+        required: true
+      on_date:
+        description: 'Date YYYY-MM-DD. Leave blank for today.'
+        type: string
+        default: ''
+      fees:
+        description: 'Commission and taxes'
+        type: string
+        default: '0'
+      note:
+        description: 'Why'
+        type: string
+        default: ''
+
+# Shares the watch's group so the two never write the same SQLite file at once. A trade recorded
+# while the daily check was mid-run could be lost or could corrupt the file.
+concurrency:
+  group: quant-trader-watch
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Restore database
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: quant-trader-db-${{ github.run_id }}
+          restore-keys: |
+            quant-trader-db-
+
+      # The committed file is the source of truth for positions; the cache is a convenience. If
+      # the cache was evicted, this is what brings them back.
+      - name: Load committed positions
+        env:
+          PYTHONPATH: backend
+        run: python -m app positions-import
+
+      # Bars are needed to derive the stop and target from the strategy. Incremental, so this is
+      # quick once the cache is warm and a full download only on the first run after an eviction.
+      - name: Update bars
+        env:
+          PYTHONPATH: backend
+        run: python -m app download-data --symbols ${{ inputs.action == 'buy' && inputs.symbol || 'SPY' }}
+
+      - name: Record it
+        env:
+          PYTHONPATH: backend
+          PAPER_TRADING: 'true'
+          LIVE_TRADING: 'false'
+        run: |
+          set -e
+          DATE_ARG=""
+          if [ -n "${{ inputs.on_date }}" ]; then DATE_ARG="--on ${{ inputs.on_date }}"; fi
+
+          if [ "${{ inputs.action }}" = "buy" ]; then
+            python -m app buy "${{ inputs.symbol }}" \
+              --qty "${{ inputs.quantity }}" \
+              --price "${{ inputs.price }}" \
+              --fees "${{ inputs.fees }}" \
+              --note "${{ inputs.note }}" \
+              --broker fintual $DATE_ARG
+          else
+            python -m app sell "${{ inputs.symbol }}" \
+              --price "${{ inputs.price }}" \
+              --fees "${{ inputs.fees }}" \
+              --note "${{ inputs.note }}" $DATE_ARG
+          fi
+
+      - name: Show the result
+        if: always()
+        env:
+          PYTHONPATH: backend
+        run: |
+          {
+            echo "## ${{ inputs.action }} recorded"
+            echo
+            echo '```'
+            python -m app holdings --all || true
+            echo '```'
+            echo
+            echo "_This recorded what you did. It did not place an order; nothing here can._"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Commit the positions file
+        run: |
+          if git diff --quiet -- data/positions.json; then
+            echo "No change to data/positions.json."
+            exit 0
+          fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/positions.json
+          git commit -m "Record ${{ inputs.action }}: ${{ inputs.symbol }} @ ${{ inputs.price }}"
+          git push
+
+      - name: Keep the database
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: quant-trader-db-${{ github.run_id }}

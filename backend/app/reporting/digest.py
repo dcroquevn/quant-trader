@@ -25,7 +25,7 @@ phrasing rather than wording invented here.
 from __future__ import annotations
 
 import html
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -35,6 +35,7 @@ from app.backtesting.report import _CSS
 from app.config import REPORTS_DIR
 from app.core.logging import get_logger
 from app.core.universe import (
+    find_asset,
     ALL_REGIONS,
     DEFAULT_UNIVERSE,
     LIQUIDITY_CONCERN_USD,
@@ -44,6 +45,13 @@ from app.core.universe import (
     universe_for_region,
 )
 from app.data.engine import DataEngine
+from app.reporting.charts import (
+    SERIES,
+    Bar,
+    horizontal_bars,
+    indexed_lines,
+    sparkline,
+)
 from app.strategies.registry import build_strategy
 from app.strategies.scanner import scan_market
 
@@ -65,6 +73,23 @@ color:var(--dim);white-space:nowrap}
 .tag.sell{border-color:rgba(255,92,124,.4);color:var(--neg)}
 .priv{background:rgba(77,159,255,.06);border:1px solid rgba(77,159,255,.28);border-radius:6px;
 padding:12px 14px;margin:14px 0;font-size:12px;color:#a9cdff}
+.chart svg{width:100%;height:auto;display:block;overflow:visible;max-width:580px;margin:0 auto}
+.bl{font-size:9.5px;fill:var(--dim);font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.bv{font-size:9.5px;fill:var(--text);font-variant-numeric:tabular-nums;
+font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.bt{font-size:8.5px;fill:#4a5468;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.legend{display:flex;flex-wrap:wrap;gap:12px;margin:0 0 8px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:10.5px;color:var(--dim)}
+.chip i{width:9px;height:9px;border-radius:2px;display:inline-block}
+.spark{width:72px;height:20px;display:block}
+.chart-empty{color:var(--dim);font-size:12px;text-align:center;padding:18px 0;margin:0}
+.signal{background:rgba(38,217,138,.05);border:1px solid rgba(38,217,138,.3);border-radius:6px;
+padding:14px 16px;margin:0 0 14px}
+.signal h3{margin:0 0 6px;font-size:14px;color:var(--pos)}
+.signal .why{margin:8px 0 0;padding:0;list-style:none}
+.signal .why li{font-size:11.5px;color:#b8c0d0;margin:3px 0}
+.signal .lv{display:flex;flex-wrap:wrap;gap:16px;margin-top:8px;font-size:11.5px}
+.signal .lv b{font-variant-numeric:tabular-nums;color:var(--text);font-weight:600}
 @media (max-width:640px){
   th,td{padding:5px 6px;font-size:11.5px}
   .wrap{padding:18px 12px 48px}
@@ -138,11 +163,13 @@ def collect_digest_data(
                 "n_thin": sum(1 for s in specs if s.is_thinly_traded),
                 "n_blocked": sum(1 for r in rows if not r.tradable),
                 "benchmark": benchmark,
+                "history": {},  # filled below, once the shared history is loaded
             }
         )
 
     data: dict[str, Any] = {
         "generated_at": datetime.now(timezone.utc),
+        "history": {},  # set immediately below; regions borrow from it
         "strategy": strategy.describe(),
         "scan": scan,
         "regions": regions,
@@ -153,6 +180,10 @@ def collect_digest_data(
         "orphaned_symbols": sorted(coverage[~coverage["declared"]]["symbol"].tolist()),
         "holdings": None,
     }
+
+    data["history"] = _history(engine, [s.symbol for s in DEFAULT_UNIVERSE])
+    for entry in data["regions"]:
+        entry["history"] = data["history"]
 
     if include_holdings:
         from app.portfolio.holdings import list_holdings, realised_performance
@@ -165,6 +196,35 @@ def collect_digest_data(
         }
 
     return data
+
+
+HISTORY_DAYS = 365
+"""How much price history the charts draw. A year: long enough for a trend line to mean
+something, short enough that a 42-instrument load stays quick and the SVG stays small."""
+
+SPARK_POINTS = 60
+"""Points in a table sparkline. More than this and a 72px-wide cell renders mush."""
+
+
+def _history(engine: DataEngine, symbols: list[str]) -> dict[str, list[tuple[str, float]]]:
+    """Daily closes per symbol for the chart layer, loaded once and shared.
+
+    Carried-forward bars are trimmed, so a chart never draws a vendor-invented flat tail as if it
+    were a real price. A symbol with no stored data is absent from the result rather than present
+    and empty, so callers have to handle it rather than plotting a blank.
+    """
+    cutoff = date.today() - timedelta(days=HISTORY_DAYS)
+    out: dict[str, list[tuple[str, float]]] = {}
+    for symbol in symbols:
+        try:
+            bars = engine.load(symbol, start=cutoff, trim_carried_forward=True)
+        except (KeyError, LookupError):
+            continue
+        if bars.empty or "close" in bars and bars["close"].notna().sum() < 2:
+            continue
+        closes = bars["close"].dropna()
+        out[symbol] = [(str(i.date()), float(v)) for i, v in closes.items()]
+    return out
 
 
 def _stalest(coverage) -> tuple[str, date] | None:
@@ -186,6 +246,132 @@ def _stalest(coverage) -> tuple[str, date] | None:
 # --------------------------------------------------------------------------- #
 
 
+def _returns_chart(data: dict[str, Any]) -> str:
+    """20-session return, one small-multiple chart per region.
+
+    One combined chart could not say where a region ended: the colour already encodes gain and
+    loss, so it was not free to also encode region, and a reader seeing a Chilean ADR beside a
+    Taiwanese one had no way to tell them apart. Three charts spend vertical space instead, which
+    is the cheap axis on a phone.
+
+    Sign is carried by the side of the zero line and by the +/- in the direct label, so meaning
+    never rests on colour alone.
+    """
+    charts: list[str] = []
+    for entry in data["regions"]:
+        rows = [r for r in entry["rows"] if r.return_20d is not None]
+        if not rows:
+            continue
+        bars = [
+            Bar(
+                label=row.symbol,
+                value=float(row.return_20d),
+                detail=f"{row.symbol}: {row.return_20d:+.2f}% over 20 sessions, "
+                f"last {row.price:.2f}",
+            )
+            for row in sorted(rows, key=lambda r: r.return_20d, reverse=True)
+        ]
+        charts.append(
+            horizontal_bars(
+                bars,
+                title=f"{entry['region']} — 20-session return",
+                value_suffix="%",
+                diverging=True,
+                row_height=19.0,
+            )
+        )
+    return "".join(charts)
+
+
+def _benchmark_chart(data: dict[str, Any]) -> str:
+    """Each region's benchmark over a year, rebased to 100."""
+    history = data["history"]
+    series: dict[str, list[tuple[str, float]]] = {}
+    for entry in data["regions"]:
+        symbol = entry["benchmark"].symbol
+        if symbol and symbol in history:
+            series[f"{entry['region']} ({symbol})"] = history[symbol]
+    return indexed_lines(series, title="Regional benchmarks, rebased to 100 one year ago")
+
+
+def _liquidity_chart(data: dict[str, Any]) -> str:
+    """Daily traded value on a log scale, with the threshold that triggers the caveat."""
+    bars: list[Bar] = []
+    colours = {
+        entry["region"]: SERIES[i % len(SERIES)] for i, entry in enumerate(data["regions"])
+    }
+    for entry in data["regions"]:
+        specs = [s for s in entry["specs"] if s.median_turnover_usd]
+        for spec in sorted(specs, key=lambda s: s.median_turnover_usd or 0, reverse=True):
+            bars.append(
+                Bar(
+                    label=spec.symbol,
+                    value=float(spec.median_turnover_usd or 0),
+                    group=entry["region"],
+                    flagged=spec.is_thinly_traded,
+                    detail=spec.liquidity_caveat
+                    or f"{spec.symbol}: {spec.median_turnover_usd:,.0f} USD/day",
+                )
+            )
+    return horizontal_bars(
+        bars,
+        title="Median daily traded value (log scale)",
+        by_group=True,
+        group_colours=colours,
+        log_scale=True,
+        row_height=19.0,
+        threshold=LIQUIDITY_CONCERN_USD,
+        threshold_label=f"{LIQUIDITY_CONCERN_USD / 1_000_000:.0f}M",
+    )
+
+
+def _signals_block(data: dict[str, Any]) -> str:
+    """Today's entries and exits, with the conditions that produced each one.
+
+    Given its own block above the charts because it is the only part that might prompt an action,
+    and listing the reasons because a signal you cannot interrogate is one you either obey blindly
+    or ignore.
+    """
+    signals = [
+        (entry["region"], row)
+        for entry in data["regions"]
+        for row in entry["rows"]
+        if row.action in {"BUY", "SELL"}
+    ]
+    if not signals:
+        return (
+            '<p class="sub">No entry or exit conditions hold on any instrument today. That is '
+            "the normal case: over the 2016-2021 backtest this strategy made 915 entries across "
+            "all 42 instruments, about 13 a month in total.</p>"
+        )
+
+    blocks = []
+    for region, row in signals:
+        spec = find_asset(row.symbol, row.market)
+        levels = [
+            f"Last <b>{row.price:,.2f}</b>",
+            f"20d <b>{row.return_20d:+.1f}%</b>" if row.return_20d is not None else "",
+            f"Stop <b>{row.stop_price:,.2f}</b>" if row.stop_price else "",
+            f"Target <b>{row.take_profit_price:,.2f}</b>" if row.take_profit_price else "",
+            f"Reward/risk <b>{row.risk_reward:.1f}x</b>" if row.risk_reward else "",
+        ]
+        why = "".join(f"<li>{_esc(r)}</li>" for r in row.reasons)
+        caveat = (
+            f'<p class="sub" style="margin-top:8px">{_esc(spec.liquidity_caveat)}</p>'
+            if spec.liquidity_caveat
+            else ""
+        )
+        blocks.append(
+            f'<div class="signal"><h3>{_esc(row.action)} &middot; {_esc(row.symbol)} '
+            f"&mdash; {_esc(spec.name)}</h3>"
+            f'<p class="sub">{_esc(region)} &middot; score {row.score:.2f}: '
+            f"{_esc(row.score_description)}</p>"
+            f'<div class="lv">{"".join(f"<span>{p}</span>" for p in levels if p)}</div>'
+            f'<ul class="why">{why}</ul>{caveat}</div>'
+        )
+    return "".join(blocks)
+
+
 def _region_section(entry: dict[str, Any]) -> str:
     region = entry["region"]
     benchmark = entry["benchmark"]
@@ -198,6 +384,7 @@ def _region_section(entry: dict[str, Any]) -> str:
         )
     else:
         cells = []
+        history = entry.get("history", {})
         for row in rows:
             tags = []
             if row.action == "BUY":
@@ -206,9 +393,12 @@ def _region_section(entry: dict[str, Any]) -> str:
                 tags.append('<span class="tag sell">exit conditions hold</span>')
             if not row.tradable:
                 tags.append(f'<span class="tag thin">{_esc(row.blocked_reason)}</span>')
+            points = history.get(row.symbol, [])
+            spark = sparkline([v for _, v in points[-SPARK_POINTS:]])
             cells.append(
                 "<tr>"
                 f"<td>{_esc(row.symbol)}</td>"
+                f"<td>{spark}</td>"
                 f"<td>{_esc(row.action)}</td>"
                 f"<td>{row.score:.2f}</td>"
                 f"<td>{_price(row.price)}</td>"
@@ -219,7 +409,7 @@ def _region_section(entry: dict[str, Any]) -> str:
             )
         body = (
             '<div class="scroll"><table><thead><tr>'
-            "<th>Symbol</th><th>Signal</th><th>Score</th><th>Price</th>"
+            "<th>Symbol</th><th>60 sessions</th><th>Signal</th><th>Score</th><th>Price</th>"
             "<th>20d return</th><th>Traded value</th><th></th>"
             "</tr></thead><tbody>" + "".join(cells) + "</tbody></table></div>"
         )
@@ -361,6 +551,24 @@ the currency move as well as the underlying move, and nothing in this project se
 two.</div>
 
 {holdings_block}
+
+<h2>Today</h2>
+{_signals_block(data)}
+
+<h2>What is moving</h2>
+{_returns_chart(data)}
+
+<h2>How each region has done</h2>
+<p class="sub">Each region's benchmark over the past year, rebased so all three start at 100.
+Rebasing is what lets instruments trading at very different prices share one axis &mdash; a second
+vertical scale would let the crossover point be placed anywhere by choosing the scales.</p>
+{_benchmark_chart(data)}
+
+<h2>How much each one trades</h2>
+<p class="sub">Log scale: this spans four orders of magnitude, and on a linear axis everything
+except SPY would be an invisible sliver. Bars left of the dashed line are the ones where a
+position large enough to matter would move the price.</p>
+{_liquidity_chart(data)}
 
 {''.join(_region_section(entry) for entry in data["regions"])}
 

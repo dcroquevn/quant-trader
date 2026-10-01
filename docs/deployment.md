@@ -131,6 +131,46 @@ input the first time so nothing is sent while you check the output.
 
 For Option B, also set **Settings → Pages → Source → GitHub Actions**.
 
+## Recording a trade from your phone
+
+`python -m app buy` needs a terminal, and the moment you most want to record a trade is the moment
+you just made one — in a broker's app, nowhere near a computer. An unrecorded position is an
+unwatched position, so that friction is not cosmetic.
+
+**GitHub mobile app → your repo → Actions → Record a trade → Run workflow.** It is a form:
+
+| Field | Buy | Sell |
+|---|---|---|
+| action | `buy` | `sell` |
+| symbol | the ticker, e.g. `SQM` | the **holding id**, e.g. `3` |
+| quantity | shares bought | ignored |
+| price | what you paid per share | what you received |
+| on_date | blank for today | blank for today |
+| fees | commission and taxes | commission and taxes |
+| note | why | why |
+
+The run prints your holdings in its summary, and commits the updated positions file. It places no
+order and cannot: there is no broker connection anywhere in this project.
+
+The holding id for a sell comes from the daily watch summary, from the Telegram alert (every exit
+alert ends with the exact `app sell <id>` command), or from `python -m app holdings`.
+
+## Where positions actually live
+
+In **`data/positions.json`**, committed to the repository.
+
+Not in the Actions cache. The cache is evicted after about a week of disuse, and while ten years
+of price history re-downloads in a few minutes, *nothing* can rebuild what you bought — no
+provider knows. So the holdings are also written to a few hundred bytes of JSON that lives in git:
+
+* `buy` and `sell` rewrite it automatically, locally and in the workflow.
+* Every scheduled run imports it before checking anything, so an eviction costs nothing.
+* The import is idempotent — matched on symbol and entry date — because it runs daily and
+  duplicating a position would corrupt every P&L figure derived from it, silently.
+* It is JSON rather than the SQLite file so it diffs in a pull request and a human can read it.
+
+`python -m app positions-export` and `positions-import` do it by hand if you need to.
+
 ## If the Actions tab shows no workflows
 
 This happened on the first push of this repository, so it is worth writing down. The symptom:
@@ -251,6 +291,7 @@ still will eventually.
 |---|---|---|---|
 | `daily-watch.yml` | 21:30 UTC, Mon–Fri | Downloads bars, checks your positions, sends Telegram alerts, writes a job summary with both your positions and a market overview, attaches the digest as an artifact | Telegram secrets; a private repo |
 | `publish-digest.yml` | **manual only** | Downloads bars, builds the static digest, deploys to Pages | Pages enabled; a public repo on the free plan |
+| `record-trade.yml` | **manual only** | Records a buy or a sell from a form, commits `data/positions.json` | nothing; this is the phone entry point |
 
 21:30 UTC is after the US close with enough margin for the provider to settle the final bar.
 Actions cron is not punctual — a job can start 10–30 minutes late under load, and occasionally not

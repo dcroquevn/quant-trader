@@ -41,6 +41,7 @@ what turned out not to.
 ## Table of contents
 
 - [What works today](#what-works-today)
+- [What the digest looks like](#what-the-digest-looks-like)
 - [What horizon this operates on](#what-horizon-this-operates-on)
 - [Why there are no Santiago tickers](#why-there-are-no-santiago-tickers)
 - [Quick start](#quick-start)
@@ -71,7 +72,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 864 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 871 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -91,6 +92,31 @@ what turned out not to.
 
 Commands belonging to later phases are registered and **refuse to run**, naming
 the phase they belong to. Nothing prints a fabricated result.
+
+---
+
+## What the digest looks like
+
+One self-contained HTML file — no server, no build step, no network — built by
+`python -m app digest` and attached to every scheduled run.
+
+| Section | Form | Why that form |
+|---|---|---|
+| Today's signals | Cards with the conditions that fired | The only part that might prompt an action, so it goes first and shows its reasoning. A signal you cannot interrogate is one you either obey blindly or ignore |
+| 20-session return | Diverging bars, one chart per region | Polarity. Split by region because colour already encodes gain/loss and cannot also carry region |
+| Regional benchmarks | Lines rebased to 100 | Change over time across instruments trading at \$38, \$187 and \$764. Rebasing is what lets them share one axis; a second y-scale would let the crossover be placed anywhere by choosing the scales |
+| Traded value | Log-scale bars, threshold drawn | Magnitude over four orders of magnitude. On a linear axis everything but SPY is an invisible sliver |
+| Per-region tables | Sparkline per row | Small multiples: "what has this been doing" without a second page |
+
+Charts are inline SVG with no script, because the page has to open from a `file://` URL and from a
+phone with no network. The palette is the project's, re-validated against the dark panel surface:
+lightness band, chroma floor, all-pairs CVD separation (worst ΔE 9.4 deutan), normal-vision floor
+(20.9) and 3:1 contrast all pass.
+
+Two things found only by rendering it and looking: at a 680-unit viewBox the instrument labels
+came out around 7px on a phone, and the benchmark end labels read "Emerging Asia (AAXJ) 134",
+three times the right margin, so all three were clipped mid-word. Both fixed; the lesson is that
+the validator checks colour, not layout.
 
 ---
 
@@ -292,7 +318,9 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app holdings` | Positions you have recorded, marked at the latest close |
 | `python -m app watch` | Check every open position's exit rule and alert on what fired |
 | `python -m app alerts` | Every notification attempted, and whether it was delivered |
-| `python -m app digest` | Self-contained HTML digest of the universe. No server needed |
+| `python -m app digest` | Self-contained HTML digest with charts. No server needed |
+| `python -m app positions-export` | Write holdings to `data/positions.json` so they survive |
+| `python -m app positions-import` | Restore holdings from that file. Idempotent |
 | `python -m app prune-data` | Delete stored bars for instruments no longer in the universe |
 | `python -m app serve` | Run the API |
 
@@ -810,7 +838,7 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 864 tests (861 offline, 3 live)
+python -m pytest                          # 871 tests (868 offline, 3 live)
 python -m pytest -m 'not slow'            # skip the minutes-long integration tests
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage

@@ -45,6 +45,9 @@ __all__ = [
     "list_holdings",
     "open_holdings",
     "realised_performance",
+    "export_positions",
+    "import_positions",
+    "POSITIONS_FILE",
 ]
 
 
@@ -375,3 +378,106 @@ def _evidence_statement(n_closed: int, n_winners: int) -> str:
         "the backtest is the one to distrust. Note that this sample is not independent of the "
         "backtest: the strategy was chosen because it looked good on that history."
     )
+
+
+# --------------------------------------------------------------------------- #
+# Durable export: the only state no provider can rebuild
+# --------------------------------------------------------------------------- #
+
+POSITIONS_FILE = "data/positions.json"
+"""Where the portable copy of the holdings lives.
+
+Everything else in the database can be re-downloaded in minutes. These cannot: no provider knows
+what the user bought. The GitHub Actions cache that normally carries the database is evicted after
+about a week of disuse, so the holdings also live in a small committed file that survives it.
+
+JSON rather than the SQLite file itself: a few hundred bytes instead of ten megabytes, diffable in
+a pull request, and readable by a human who wants to check what the system thinks they own.
+"""
+
+
+def export_positions(session: Session) -> list[dict[str, Any]]:
+    """Every holding as plain data, ordered so the output is stable across runs.
+
+    Stable ordering matters because this gets committed: an unstable order would produce a diff on
+    every run and make a real change impossible to spot.
+    """
+    rows = []
+    for holding in sorted(list_holdings(session), key=lambda h: (h.opened_on, h.symbol)):
+        rows.append(
+            {
+                "symbol": holding.symbol,
+                "market": holding.market,
+                "quantity": holding.quantity,
+                "entry_price": holding.entry_price,
+                "opened_on": holding.opened_on.date().isoformat(),
+                "entry_fees": holding.entry_fees,
+                "strategy_name": holding.strategy_name,
+                "strategy_params": holding.strategy_params,
+                "stop_price": holding.stop_price,
+                "take_profit_price": holding.take_profit_price,
+                "broker": holding.broker,
+                "entry_note": holding.entry_note,
+                "closed_on": (
+                    holding.closed_on.date().isoformat() if holding.closed_on else None
+                ),
+                "exit_price": holding.exit_price,
+                "exit_fees": holding.exit_fees,
+                "exit_note": holding.exit_note,
+            }
+        )
+    return rows
+
+
+def import_positions(session: Session, rows: list[dict[str, Any]]) -> dict[str, int]:
+    """Recreate holdings from an export. Idempotent.
+
+    Idempotent because the daily job runs this every time: a holding already present, matched on
+    symbol and entry date, is skipped rather than duplicated. Without that, a week of scheduled
+    runs would turn one position into seven and every P&L figure derived from them would be wrong.
+
+    Rows that fail validation are counted and skipped rather than aborting the import, so one bad
+    record cannot cost the user every other position.
+    """
+    existing = {
+        (h.symbol, h.opened_on.date().isoformat()) for h in list_holdings(session)
+    }
+    result = {"added": 0, "skipped": 0, "failed": 0}
+
+    for row in rows:
+        key = (row.get("symbol"), row.get("opened_on"))
+        if key in existing:
+            result["skipped"] += 1
+            continue
+        try:
+            holding = open_holding(
+                session,
+                row["symbol"],
+                float(row["quantity"]),
+                float(row["entry_price"]),
+                opened_on=date.fromisoformat(row["opened_on"]),
+                strategy_name=row.get("strategy_name") or "trend_momentum",
+                strategy_params=row.get("strategy_params"),
+                stop_price=row.get("stop_price"),
+                take_profit_price=row.get("take_profit_price"),
+                entry_fees=float(row.get("entry_fees") or 0.0),
+                broker=row.get("broker") or "",
+                note=row.get("entry_note") or "",
+                market=row.get("market"),
+            )
+            if row.get("closed_on") and row.get("exit_price"):
+                close_holding(
+                    session,
+                    holding.id,
+                    float(row["exit_price"]),
+                    closed_on=date.fromisoformat(row["closed_on"]),
+                    exit_fees=float(row.get("exit_fees") or 0.0),
+                    note=row.get("exit_note") or "",
+                )
+            result["added"] += 1
+            existing.add(key)
+        except (KeyError, ValueError, TypeError) as exc:
+            logger.warning("Skipped position %s: %s", row.get("symbol"), exc)
+            result["failed"] += 1
+
+    return result

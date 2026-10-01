@@ -89,9 +89,18 @@ jobs:
           if [ -f data/quant_trader.db ]; then
             echo "Database restored: $(du -h data/quant_trader.db | cut -f1)"
           else
-            echo "::warning::No cached database. Bars will re-download, but any recorded"
-            echo "::warning::positions are gone -- re-add them with 'python -m app buy'."
+            # One ::warning:: per message. Splitting a sentence across two produced two
+            # unrelated-looking annotations, the second of which read as a bare statement
+            # that positions were gone.
+            echo "::warning::No cached database; bars will re-download. Positions come from the committed data/positions.json, which the next step loads."
           fi
+
+      # Positions are the one thing no provider can rebuild, so they live in a committed file
+      # rather than only in the cache. Idempotent, so running it daily cannot duplicate them.
+      - name: Load committed positions
+        env:
+          PYTHONPATH: backend
+        run: python -m app positions-import
 
       - name: Download new bars
         env:
