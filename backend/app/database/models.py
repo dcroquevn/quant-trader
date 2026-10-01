@@ -594,7 +594,35 @@ class Holding(Base):
     """What was actually paid per share, as reported by the user. Not a modelled fill."""
 
     quantity: Mapped[float] = mapped_column(Float, nullable=False)
+    """Shares held. Fractional is normal: a broker selling by cash amount produces 0.0592."""
+
     entry_fees: Mapped[float] = mapped_column(Float, nullable=False, default=0.0)
+
+    entry_amount: Mapped[float | None] = mapped_column(Float, nullable=True)
+    """The cash the user said they spent, before conversion. Null when they gave a share count.
+
+    Stored even though ``quantity`` is derived from it, because a derived number should not be
+    the only record of the fact it came from -- "I put in 20.36 dollars" is what the user will
+    remember, and 0.0592 shares is not.
+    """
+
+    entry_amount_currency: Mapped[str] = mapped_column(String(8), nullable=False, default="USD")
+
+    entry_fx_rate: Mapped[float | None] = mapped_column(Float, nullable=True)
+    """Units of ``entry_amount_currency`` per USD, when a conversion happened.
+
+    Recorded so the share count can be checked later. The rate is a daily close, not the rate the
+    broker actually gave, so it is an approximation of a number the user could look up exactly.
+    """
+
+    entry_price_estimated: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False
+    )
+    """True when the entry price came from the latest stored close, not from the user.
+
+    This table exists to keep real fills apart from modelled ones, so an inferred price has to
+    announce itself. Every surface that shows a P&L derived from it says so.
+    """
 
     closed_on: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)

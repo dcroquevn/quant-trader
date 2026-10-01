@@ -1,1 +1,24 @@
-[]
+[
+ {
+  "broker": "fintual",
+  "closed_on": null,
+  "entry_amount": 20.36,
+  "entry_amount_currency": "USD",
+  "entry_fees": 0.0,
+  "entry_fx_rate": 1.0,
+  "entry_note": "compra fraccionada, senal del 2026-10-01",
+  "entry_price": 351.44,
+  "entry_price_estimated": false,
+  "exit_fees": 0.0,
+  "exit_note": "",
+  "exit_price": null,
+  "market": "USA",
+  "opened_on": "2026-10-01",
+  "quantity": 0.05793307534714318,
+  "stop_price": 327.1698,
+  "strategy_name": "trend_momentum",
+  "strategy_params": null,
+  "symbol": "GOOGL",
+  "take_profit_price": 394.8105
+ }
+]

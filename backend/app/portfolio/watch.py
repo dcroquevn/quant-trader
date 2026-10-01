@@ -138,6 +138,13 @@ class WatchOutcome:
 
     liquidity_caveat: str = ""
 
+    entry_price_estimated: bool = False
+    """True when the entry price was assumed rather than reported.
+
+    Every P&L figure on this outcome is then against an assumed entry, which is a different kind
+    of number from one computed against a real fill, and the surfaces say so.
+    """
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "holding_id": self.holding_id,
@@ -184,6 +191,7 @@ class WatchOutcome:
             "usable": self.usable,
             "problem": self.problem,
             "liquidity_caveat": self.liquidity_caveat,
+            "entry_price_estimated": self.entry_price_estimated,
         }
 
 
@@ -339,6 +347,7 @@ def check_holdings(
             opened_on=holding.opened_on.date(),
             take_profit_price=holding.take_profit_price,
             liquidity_caveat=spec.liquidity_caveat,
+            entry_price_estimated=holding.entry_price_estimated,
         )
 
         try:
@@ -505,6 +514,14 @@ def _exit_message(outcome: WatchOutcome) -> tuple[str, str]:
         "the strategy is right. It is one rule's opinion, measured on history that may not",
         "repeat. The decision is yours.",
     ]
+
+    if outcome.entry_price_estimated:
+        lines += [
+            "",
+            "NOTE: this position's entry price was never supplied, so it was assumed from the "
+            "closing price on the day it was recorded. The unrealised figure above is against "
+            "that assumption, not against what you paid. Correct it and the number becomes real.",
+        ]
 
     if outcome.liquidity_caveat:
         lines += ["", f"Note: {outcome.liquidity_caveat}"]

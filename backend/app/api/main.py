@@ -323,6 +323,9 @@ def holdings(include_closed: bool = Query(True)) -> dict[str, Any]:
                     "currency": holding.currency,
                     "quantity": holding.quantity,
                     "entry_price": holding.entry_price,
+                    "entry_price_estimated": holding.entry_price_estimated,
+                    "entry_amount": holding.entry_amount,
+                    "entry_amount_currency": holding.entry_amount_currency,
                     "cost_basis": round(
                         holding.entry_price * holding.quantity + holding.entry_fees, 2
                     ),
@@ -375,6 +378,8 @@ def holdings(include_closed: bool = Query(True)) -> dict[str, Any]:
                 "not a price anything could be traded at.",
                 "An open position's percentage is on the entry price; a closed one's is on the "
                 "cost basis including the entry fee, so the two are not directly comparable.",
+                "Where entry_price_estimated is true the entry was assumed from a closing price "
+                "rather than reported, so every figure derived from it is approximate.",
             ],
         }
 

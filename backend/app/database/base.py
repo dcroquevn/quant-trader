@@ -108,18 +108,24 @@ def session_scope() -> Iterator[Session]:
 
 
 def init_database(engine: Engine | None = None) -> Engine:
-    """Create every table and index that does not exist yet.
+    """Create every table and index that does not exist yet, then apply pending migrations.
 
-    Safe to call repeatedly. This is schema creation only -- there is no
-    migration tooling yet, so a change to ``models.py`` on an existing database
-    needs either a manual ``ALTER`` or deleting ``data/quant_trader.db`` and
-    re-downloading. Bars are reproducible from the providers, so dropping the
-    file loses nothing but time.
+    Safe to call repeatedly.
+
+    ``create_all`` adds missing *tables* and silently ignores missing *columns* on a table that
+    already exists, so a new field on an existing model leaves older databases broken until
+    something queries that column. :func:`app.database.migrations.run_migrations` closes that
+    gap for additive changes. Anything beyond additive -- a rename, a type change -- still needs
+    a considered migration, and deleting ``data/quant_trader.db`` remains an option for the bars
+    since those are reproducible from the providers. Recorded positions are not: they live in
+    ``data/positions.json`` precisely so that stays true.
     """
     from app.database import models  # noqa: F401  -- registers mappers
+    from app.database.migrations import run_migrations
 
     target = engine or get_engine()
     Base.metadata.create_all(target)
+    run_migrations(target)
     return target
 
 

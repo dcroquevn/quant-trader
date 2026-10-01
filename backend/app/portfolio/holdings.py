@@ -24,7 +24,7 @@ table exists to prevent.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime, time, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from typing import Any
 
 from sqlalchemy import select
@@ -37,8 +37,29 @@ from app.database.models import Holding
 
 logger = get_logger(__name__)
 
+FX_SYMBOLS = {"CLP": "USDCLP=X"}
+"""Yahoo tickers for the currencies a purchase may be denominated in.
+
+USD needs no entry: the instruments are all USD-denominated, so a USD amount converts by 1.
+"""
+
+
+class PriceUnavailableError(RuntimeError):
+    """No price could be established, so no share count can be derived.
+
+    Raised rather than defaulted, because every available default is a lie: zero shares records
+    nothing, one share records something the user did not do, and an arbitrary price produces a
+    P&L that looks real.
+    """
+
+
 __all__ = [
     "HoldingSummary",
+    "FX_SYMBOLS",
+    "PriceUnavailableError",
+    "resolve_quantity",
+    "assess_entry",
+    "EntryQuality",
     "open_holding",
     "close_holding",
     "get_holding",
@@ -135,6 +156,243 @@ class HoldingSummary:
         }
 
 
+def latest_close(session: Session, symbol: str, market: str | None = None) -> float | None:
+    """The newest stored close for an instrument, or None if nothing is stored.
+
+    Deliberately not a live quote: this project has no real-time feed, and pretending otherwise
+    would make an estimated entry price look better than it is.
+    """
+    from app.data.engine import DataEngine
+
+    try:
+        bars = DataEngine(session).load(symbol, market, trim_carried_forward=True)
+    except (KeyError, LookupError):
+        return None
+    if bars.empty or bars["close"].dropna().empty:
+        return None
+    return float(bars["close"].dropna().iloc[-1])
+
+
+def fx_rate_to_usd(session: Session, currency: str) -> float | None:
+    """Units of ``currency`` per USD, from the day's close. None if unavailable.
+
+    A daily close, not the rate a broker applied at the moment of the trade. The difference is
+    typically small and occasionally is not; it is stored on the holding so it can be corrected
+    rather than argued about.
+    """
+    currency = currency.upper()
+    if currency == "USD":
+        return 1.0
+
+    ticker = FX_SYMBOLS.get(currency)
+    if ticker is None:
+        return None
+
+    from app.data.provider import Timeframe
+    from app.data.registry import get_provider
+
+    try:
+        frame = get_provider("yfinance").fetch_bars(
+            ticker,
+            Timeframe.D1,
+            start=datetime.now(timezone.utc) - timedelta(days=14),
+            end=datetime.now(timezone.utc),
+        )
+    except Exception as exc:  # provider failures are expected and must not abort a recording
+        logger.warning("Could not fetch %s: %s", ticker, exc)
+        return None
+    if frame.empty or frame["close"].dropna().empty:
+        return None
+    return float(frame["close"].dropna().iloc[-1])
+
+
+@dataclass(frozen=True, slots=True)
+class ResolvedEntry:
+    """What a cash amount works out to, and what had to be assumed to get there."""
+
+    quantity: float
+    price: float
+    price_estimated: bool
+    amount: float | None
+    currency: str
+    fx_rate: float | None
+    amount_usd: float | None
+
+    def describe(self) -> str:
+        """One line the CLI and the workflow summary can both print verbatim."""
+        parts = []
+        if self.amount is not None:
+            if self.currency != "USD":
+                parts.append(
+                    f"{self.amount:,.2f} {self.currency} at {self.fx_rate:,.2f} per USD "
+                    f"= {self.amount_usd:,.2f} USD"
+                )
+            else:
+                parts.append(f"{self.amount:,.2f} USD")
+        parts.append(
+            f"{self.quantity:.6f} shares at {self.price:,.4f}"
+            + (" (ESTIMATED from the latest close)" if self.price_estimated else "")
+        )
+        return " -> ".join(parts)
+
+
+def resolve_quantity(
+    session: Session,
+    symbol: str,
+    *,
+    quantity: float | None = None,
+    amount: float | None = None,
+    price: float | None = None,
+    currency: str = "USD",
+    market: str | None = None,
+) -> ResolvedEntry:
+    """Work out shares and price from whatever the user supplied.
+
+    Accepts a share count or a cash amount, never both -- a caller who gave both meant one of
+    them, and silently preferring one would record a position they did not take.
+
+    When ``price`` is omitted the latest stored close is used and the result is flagged. That
+    flag travels with the holding forever, because a P&L computed against an assumed entry is
+    not the same kind of number as one computed against a real fill.
+    """
+    if (quantity is None) == (amount is None):
+        raise ValueError(
+            "Give either a share quantity or a cash amount, not both and not neither. "
+            "A cash amount is the usual case for a fractional purchase."
+        )
+
+    currency = (currency or "USD").upper()
+    estimated = price is None
+    if price is None:
+        price = latest_close(session, symbol, market)
+        if price is None:
+            raise PriceUnavailableError(
+                f"No stored price for {symbol} and none supplied, so the share count cannot be "
+                f"derived. Pass the price you paid, or run "
+                f"`python -m app download-data --symbols {symbol}` first."
+            )
+    if price <= 0:
+        raise ValueError(f"Price must be positive, got {price}")
+
+    if quantity is not None:
+        return ResolvedEntry(
+            quantity=float(quantity),
+            price=float(price),
+            price_estimated=estimated,
+            amount=None,
+            currency="USD",
+            fx_rate=None,
+            amount_usd=None,
+        )
+
+    if amount is None or amount <= 0:
+        raise ValueError(f"Amount must be positive, got {amount}")
+
+    rate = fx_rate_to_usd(session, currency)
+    if rate is None:
+        raise ValueError(
+            f"No exchange rate available for {currency}. Supported: "
+            f"{', '.join(['USD', *FX_SYMBOLS])}. Record the amount in USD instead."
+        )
+
+    amount_usd = float(amount) / rate
+    return ResolvedEntry(
+        quantity=amount_usd / float(price),
+        price=float(price),
+        price_estimated=estimated,
+        amount=float(amount),
+        currency=currency,
+        fx_rate=rate,
+        amount_usd=amount_usd,
+    )
+
+
+
+RR_DEGRADATION_THRESHOLD = 0.25
+"""Relative drop in reward-to-risk that is worth interrupting the user over.
+
+A quarter. Below that the difference is inside the noise of where a stop would sit anyway; above
+it, the trade being taken is visibly not the trade that was signalled.
+"""
+
+RR_FLOOR = 2.0
+"""Falling under this having started above it is reported regardless of the relative drop."""
+
+
+@dataclass(frozen=True, slots=True)
+class EntryQuality:
+    """How the price paid compares with the price the levels were derived from."""
+
+    paid: float
+    reference: float
+    stop: float
+    target: float
+
+    @property
+    def slippage_pct(self) -> float:
+        return (self.paid / self.reference - 1.0) * 100.0
+
+    @property
+    def reward_risk_signalled(self) -> float | None:
+        risk = self.reference - self.stop
+        return (self.target - self.reference) / risk if risk > 0 else None
+
+    @property
+    def reward_risk_paid(self) -> float | None:
+        risk = self.paid - self.stop
+        return (self.target - self.paid) / risk if risk > 0 else None
+
+    @property
+    def is_material(self) -> bool:
+        """Whether the change is worth interrupting over."""
+        before, after = self.reward_risk_signalled, self.reward_risk_paid
+        if before is None or after is None or before <= 0:
+            return True  # the stop is at or above the fill: always worth saying
+        if after < RR_FLOOR <= before:
+            return True
+        return (before - after) / before >= RR_DEGRADATION_THRESHOLD
+
+    def describe(self) -> str:
+        """Plain text for the CLI, the workflow summary and the alert. ASCII only."""
+        before, after = self.reward_risk_signalled, self.reward_risk_paid
+        if after is not None and after <= 0:
+            return (
+                f"You paid {self.paid:,.2f}, which is at or above the target {self.target:,.2f}, "
+                "or at or below the stop. The levels from the signal do not describe this "
+                "position at all."
+            )
+        lines = [
+            f"You paid {self.paid:,.2f}; the signal was computed from {self.reference:,.2f} "
+            f"({self.slippage_pct:+.2f}%).",
+            f"Risk to the stop {self.stop:,.2f} is now "
+            f"{(self.paid - self.stop) / self.paid * 100:.2f}% and reward to the target "
+            f"{self.target:,.2f} is {(self.target - self.paid) / self.paid * 100:.2f}%.",
+        ]
+        if before and after:
+            lines.append(
+                f"Reward-to-risk {before:.2f}x at the signal price, {after:.2f}x at yours."
+            )
+        lines.append(
+            "The levels do not move with your fill -- the stop is where the strategy's "
+            "volatility estimate puts it -- so a worse entry costs the whole difference. "
+            "Whether this is still worth holding is your call; nothing here can answer it."
+        )
+        return " ".join(lines)
+
+
+def assess_entry(
+    paid: float, reference: float, stop: float | None, target: float | None
+) -> EntryQuality | None:
+    """Compare a fill against the price its levels were derived from.
+
+    Returns None when there is nothing to compare -- no levels, or no reference price -- rather
+    than inventing a baseline.
+    """
+    if not stop or not target or not reference or reference <= 0:
+        return None
+    return EntryQuality(paid=float(paid), reference=float(reference), stop=stop, target=target)
+
+
 def open_holding(
     session: Session,
     symbol: str,
@@ -150,6 +408,10 @@ def open_holding(
     broker: str = "",
     note: str = "",
     market: str | None = None,
+    entry_amount: float | None = None,
+    entry_amount_currency: str = "USD",
+    entry_fx_rate: float | None = None,
+    entry_price_estimated: bool = False,
 ) -> Holding:
     """Record a purchase the user already made.
 
@@ -212,6 +474,10 @@ def open_holding(
         entry_price=float(entry_price),
         quantity=float(quantity),
         entry_fees=float(entry_fees),
+        entry_amount=entry_amount,
+        entry_amount_currency=(entry_amount_currency or "USD").upper(),
+        entry_fx_rate=entry_fx_rate,
+        entry_price_estimated=bool(entry_price_estimated),
         strategy_name=strategy_name,
         strategy_params=strategy_params,
         stop_price=stop_price,
@@ -412,6 +678,10 @@ def export_positions(session: Session) -> list[dict[str, Any]]:
                 "entry_price": holding.entry_price,
                 "opened_on": holding.opened_on.date().isoformat(),
                 "entry_fees": holding.entry_fees,
+                "entry_amount": holding.entry_amount,
+                "entry_amount_currency": holding.entry_amount_currency,
+                "entry_fx_rate": holding.entry_fx_rate,
+                "entry_price_estimated": holding.entry_price_estimated,
                 "strategy_name": holding.strategy_name,
                 "strategy_params": holding.strategy_params,
                 "stop_price": holding.stop_price,
@@ -461,6 +731,10 @@ def import_positions(session: Session, rows: list[dict[str, Any]]) -> dict[str, 
                 stop_price=row.get("stop_price"),
                 take_profit_price=row.get("take_profit_price"),
                 entry_fees=float(row.get("entry_fees") or 0.0),
+                entry_amount=row.get("entry_amount"),
+                entry_amount_currency=row.get("entry_amount_currency") or "USD",
+                entry_fx_rate=row.get("entry_fx_rate"),
+                entry_price_estimated=bool(row.get("entry_price_estimated")),
                 broker=row.get("broker") or "",
                 note=row.get("entry_note") or "",
                 market=row.get("market"),

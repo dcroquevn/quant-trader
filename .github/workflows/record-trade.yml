@@ -6,18 +6,22 @@
 #   is an unwatched position, so the friction is not cosmetic: it is the difference between the
 #   daily check covering your portfolio and silently covering nothing.
 #
-#   GitHub's mobile app can run a workflow with inputs. That turns this into a form on your phone.
+#   GitHub's mobile app can run a workflow with inputs, which turns this into a form on a phone.
 #
 # WHAT IT DOES NOT DO
 #   It does not buy or sell anything, and it cannot. There is no broker connection anywhere in
 #   this project. You trade in your broker's app; this records what you did so the exit rule can
 #   be watched against it.
 #
+# THE SYMBOL LIST IS GENERATED
+#   From the declared universe, by scripts in the repository history. A free-text ticker fails
+#   only after the runner has spent two minutes installing dependencies, which leaves you unsure
+#   whether the trade was recorded. Re-generate it when the universe changes.
+#
 # WHERE THE POSITIONS LIVE
-#   In `data/positions.json`, committed back to the repository by this workflow. Not in the
-#   Actions cache: that is evicted after about a week of disuse, and while the price history
-#   re-downloads in minutes, nothing can rebuild what you bought. A few hundred bytes of JSON in
-#   git is the durable copy.
+#   In `data/positions.json`, committed back by this workflow. Not in the Actions cache: that is
+#   evicted after about a week of disuse, and while price history re-downloads in minutes,
+#   nothing can rebuild what you bought.
 
 name: Record a trade
 
@@ -31,32 +35,72 @@ on:
         default: buy
         required: true
       symbol:
-        description: 'Symbol for a buy (e.g. SQM), or the holding id for a sell (e.g. 3)'
-        type: string
+        description: 'Which instrument'
+        type: choice
         required: true
-      quantity:
-        description: 'Shares bought. Ignored on a sell.'
-        type: string
-        default: '0'
-      price:
-        description: 'Price per share you actually paid or received'
-        type: string
-        required: true
-      on_date:
-        description: 'Date YYYY-MM-DD. Leave blank for today.'
+        options:
+          - SPY
+          - QQQ
+          - DIA
+          - IWM
+          - AAPL
+          - MSFT
+          - NVDA
+          - AMZN
+          - META
+          - GOOGL
+          - TSLA
+          - AMD
+          - JPM
+          - V
+          - AVGO
+          - SQM
+          - BSAC
+          - BCH
+          - ENIC
+          - CCU
+          - ECH
+          - AAXJ
+          - EEM
+          - MCHI
+          - ASHR
+          - INDA
+          - EWY
+          - EWT
+          - EIDO
+          - EWS
+          - EWM
+          - THD
+          - VNM
+          - TSM
+          - BABA
+          - PDD
+          - JD
+          - NTES
+          - INFY
+          - HDB
+          - IBN
+          - SE
+      amount:
+        description: 'Cash you spent (buy). Leave blank on a sell.'
         type: string
         default: ''
-      fees:
-        description: 'Commission and taxes'
+      currency:
+        description: 'Currency of the amount'
+        type: choice
+        options: [USD, CLP]
+        default: USD
+      price:
+        description: 'Price per share. Blank uses the last close, flagged as an estimate.'
         type: string
-        default: '0'
+        default: ''
       note:
-        description: 'Why'
+        description: 'Anything worth remembering'
         type: string
         default: ''
 
 # Shares the watch's group so the two never write the same SQLite file at once. A trade recorded
-# while the daily check was mid-run could be lost or could corrupt the file.
+# while the daily check was mid-run could be lost, or could corrupt the file.
 concurrency:
   group: quant-trader-watch
   cancel-in-progress: false
@@ -88,19 +132,19 @@ jobs:
           restore-keys: |
             quant-trader-db-
 
-      # The committed file is the source of truth for positions; the cache is a convenience. If
-      # the cache was evicted, this is what brings them back.
+      # The committed file is the source of truth for positions; the cache is a convenience.
+      # If the cache was evicted, this is what brings them back.
       - name: Load committed positions
         env:
           PYTHONPATH: backend
         run: python -m app positions-import
 
-      # Bars are needed to derive the stop and target from the strategy. Incremental, so this is
-      # quick once the cache is warm and a full download only on the first run after an eviction.
+      # Needed to derive the stop and target, and to price the trade when no price is given.
+      # Incremental, so this is quick once the cache is warm.
       - name: Update bars
         env:
           PYTHONPATH: backend
-        run: python -m app download-data --symbols ${{ inputs.action == 'buy' && inputs.symbol || 'SPY' }}
+        run: python -m app download-data --symbols ${{ inputs.symbol }}
 
       - name: Record it
         env:
@@ -109,21 +153,21 @@ jobs:
           LIVE_TRADING: 'false'
         run: |
           set -e
-          DATE_ARG=""
-          if [ -n "${{ inputs.on_date }}" ]; then DATE_ARG="--on ${{ inputs.on_date }}"; fi
+          ARGS=""
+          if [ -n "${{ inputs.price }}" ]; then ARGS="$ARGS --price ${{ inputs.price }}"; fi
+          if [ -n "${{ inputs.note }}" ]; then ARGS="$ARGS --note '${{ inputs.note }}'"; fi
 
           if [ "${{ inputs.action }}" = "buy" ]; then
-            python -m app buy "${{ inputs.symbol }}" \
-              --qty "${{ inputs.quantity }}" \
-              --price "${{ inputs.price }}" \
-              --fees "${{ inputs.fees }}" \
-              --note "${{ inputs.note }}" \
-              --broker fintual $DATE_ARG
+            if [ -z "${{ inputs.amount }}" ]; then
+              echo "::error::A buy needs an amount -- the cash you spent."
+              exit 1
+            fi
+            eval python -m app buy "${{ inputs.symbol }}" \
+              --amount "${{ inputs.amount }}" \
+              --currency "${{ inputs.currency }}" \
+              --broker fintual $ARGS
           else
-            python -m app sell "${{ inputs.symbol }}" \
-              --price "${{ inputs.price }}" \
-              --fees "${{ inputs.fees }}" \
-              --note "${{ inputs.note }}" $DATE_ARG
+            eval python -m app sell "${{ inputs.symbol }}" $ARGS
           fi
 
       - name: Show the result
@@ -132,13 +176,13 @@ jobs:
           PYTHONPATH: backend
         run: |
           {
-            echo "## ${{ inputs.action }} recorded"
+            echo "## ${{ inputs.action }} ${{ inputs.symbol }}"
             echo
             echo '```'
             python -m app holdings --all || true
             echo '```'
             echo
-            echo "_This recorded what you did. It did not place an order; nothing here can._"
+            echo "_Recorded what you did. No order was placed; nothing here can place one._"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit the positions file
@@ -150,7 +194,7 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add data/positions.json
-          git commit -m "Record ${{ inputs.action }}: ${{ inputs.symbol }} @ ${{ inputs.price }}"
+          git commit -m "Record ${{ inputs.action }}: ${{ inputs.symbol }}"
           git push
 
       - name: Keep the database

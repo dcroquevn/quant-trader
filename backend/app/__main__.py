@@ -1639,8 +1639,24 @@ def _print_projection(result: dict, *, n_matches: int = 0) -> None:
 @app.command("buy")
 def record_buy(
     symbol: str = typer.Argument(..., help="Canonical symbol, e.g. SQM."),
-    quantity: float = typer.Option(..., "--qty", "-q", help="Shares you bought."),
-    price: float = typer.Option(..., "--price", "-p", help="What you actually paid per share."),
+    quantity: float = typer.Option(
+        None, "--qty", "-q", help="Shares you bought. Use this or --amount, not both."
+    ),
+    amount: float = typer.Option(
+        None,
+        "--amount",
+        "-a",
+        help="Cash you spent. The usual case for a fractional purchase.",
+    ),
+    currency: str = typer.Option(
+        "USD", "--currency", "-c", help="Currency of --amount: USD or CLP."
+    ),
+    price: float = typer.Option(
+        None,
+        "--price",
+        "-p",
+        help="What you paid per share. Omitted: the latest close, flagged as estimated.",
+    ),
     on: str = typer.Option(
         None, "--on", help="Purchase date YYYY-MM-DD. Default: today."
     ),
@@ -1664,12 +1680,39 @@ def record_buy(
     purchase date, which is what the backtest measured. Supplying your own is fine, but then the
     exit alerts are measuring a rule this project has never backtested.
     """
-    from app.portfolio.holdings import open_holding
+    from app.portfolio.holdings import (
+        PriceUnavailableError,
+        assess_entry,
+        open_holding,
+        resolve_quantity,
+    )
 
     init_database()
     purchase_date = date.fromisoformat(on) if on else date.today()
 
     with session_scope() as session:
+        try:
+            entry = resolve_quantity(
+                session,
+                symbol,
+                quantity=quantity,
+                amount=amount,
+                price=price,
+                currency=currency,
+            )
+        except (ValueError, KeyError, PriceUnavailableError) as exc:
+            console.print(f"[red]{exc}[/red]")
+            raise typer.Exit(code=1) from exc
+
+        console.print(f"[dim]{entry.describe()}[/dim]")
+        if entry.price_estimated:
+            console.print(
+                "[yellow]The entry price was not supplied, so the latest stored close was "
+                "used.[/yellow] Every P&L figure for this position is against an assumed "
+                "entry until you correct it. Pass --price with what you actually paid."
+            )
+
+        reference_close: float | None = None
         if stop is None or target is None:
             resolved = _levels_from_strategy(session, symbol, strategy_name, purchase_date)
             if resolved is None:
@@ -1680,7 +1723,7 @@ def record_buy(
                     "levels -- the watch will then only report the strategy's signal exit."
                 )
             else:
-                derived_stop, derived_target, basis = resolved
+                derived_stop, derived_target, basis, reference_close = resolved
                 stop = stop if stop is not None else derived_stop
                 target = target if target is not None else derived_target
                 console.print(f"[dim]Levels from {basis}.[/dim]")
@@ -1689,9 +1732,13 @@ def record_buy(
             holding = open_holding(
                 session,
                 symbol,
-                quantity,
-                price,
+                entry.quantity,
+                entry.price,
                 opened_on=purchase_date,
+                entry_amount=entry.amount,
+                entry_amount_currency=entry.currency,
+                entry_fx_rate=entry.fx_rate,
+                entry_price_estimated=entry.price_estimated,
                 strategy_name=strategy_name,
                 stop_price=stop,
                 take_profit_price=target,
@@ -1705,9 +1752,9 @@ def record_buy(
 
         spec = find_asset(holding.symbol)
         console.print(
-            f"[green]Recorded holding {holding.id}:[/green] {quantity:g} {holding.symbol} "
-            f"@ {price:g} {holding.currency} on {purchase_date} "
-            f"(cost {price * quantity + fees:,.2f} {holding.currency})"
+            f"[green]Recorded holding {holding.id}:[/green] "
+            f"{holding.quantity:.6f} {holding.symbol} @ {holding.entry_price:,.4f} USD on "
+            f"{purchase_date} (cost {holding.entry_price * holding.quantity + fees:,.2f} USD)"
         )
         if holding.stop_price or holding.take_profit_price:
             console.print(
@@ -1720,6 +1767,17 @@ def record_buy(
                 "the strategy's signal exit. A price-based exit cannot fire on levels that "
                 "do not exist."
             )
+        quality = assess_entry(entry.price, reference_close or 0.0, stop, target)
+        if quality is not None and quality.is_material:
+            console.print()
+            console.print(
+                Panel(
+                    quality.describe(),
+                    title="[yellow]Your fill is not the trade that was signalled[/yellow]",
+                    expand=False,
+                )
+            )
+
         if spec.liquidity_caveat:
             console.print(f"[yellow]{spec.liquidity_caveat}[/yellow]")
         if spec.region != "United States":
@@ -1738,8 +1796,15 @@ def record_buy(
 
 @app.command("sell")
 def record_sell(
-    holding_id: int = typer.Argument(..., help="Holding id, from `python -m app holdings`."),
-    price: float = typer.Option(..., "--price", "-p", help="What you actually got per share."),
+    target: str = typer.Argument(
+        ..., help="Symbol (e.g. GOOGL) or holding id. A symbol has at most one open position."
+    ),
+    price: float = typer.Option(
+        None,
+        "--price",
+        "-p",
+        help="What you got per share. Omitted: the latest close, which is an estimate.",
+    ),
     on: str = typer.Option(None, "--on", help="Sale date YYYY-MM-DD. Default: today."),
     fees: float = typer.Option(0.0, "--fees", help="Commission and taxes you paid."),
     note: str = typer.Option("", "--note", help="Why you sold."),
@@ -1749,12 +1814,35 @@ def record_sell(
     The figures this prints are the only ones in this project that are not modelled: they come
     from the prices you report, not from an assumed fill.
     """
-    from app.portfolio.holdings import close_holding, realised_performance
+    from app.portfolio.holdings import (
+        close_holding,
+        latest_close,
+        list_holdings,
+        realised_performance,
+    )
 
     init_database()
     sale_date = date.fromisoformat(on) if on else date.today()
 
     with session_scope() as session:
+        holding_id = _resolve_holding(session, target, list_holdings)
+        if holding_id is None:
+            raise typer.Exit(code=1)
+
+        if price is None:
+            row = next(h for h in list_holdings(session) if h.id == holding_id)
+            price = latest_close(session, row.symbol, row.market)
+            if price is None:
+                console.print(
+                    f"[red]No stored price for {row.symbol} and none supplied.[/red] "
+                    "Pass --price with what you actually received."
+                )
+                raise typer.Exit(code=1)
+            console.print(
+                f"[yellow]No price supplied, using the latest close {price:,.4f}.[/yellow] "
+                "That is an estimate, not what you received; the P&L below is approximate."
+            )
+
         try:
             holding = close_holding(
                 session, holding_id, price, closed_on=sale_date, exit_fees=fees, note=note
@@ -1781,6 +1869,110 @@ def record_sell(
 
     _sync_positions_file()
 
+
+
+def _resolve_holding(session, target: str, list_holdings) -> "int | None":
+    """Turn a symbol or an id into a holding id, or explain why it cannot.
+
+    A symbol is accepted because the id was the only handle and finding it meant opening another
+    screen on a phone. At most one open holding per symbol exists -- ``open_holding`` refuses a
+    second -- so a symbol is unambiguous for the case that matters.
+    """
+    cleaned = target.strip()
+    if cleaned.isdigit():
+        return int(cleaned)
+
+    symbol = cleaned.upper()
+    matches = [
+        h for h in list_holdings(session, include_closed=False) if h.symbol == symbol
+    ]
+    if len(matches) == 1:
+        return matches[0].id
+    if not matches:
+        open_now = [h.symbol for h in list_holdings(session, include_closed=False)]
+        console.print(
+            f"[red]No open holding in {symbol}.[/red] "
+            + (f"Open positions: {', '.join(open_now)}." if open_now else "Nothing is open.")
+        )
+        return None
+    # Unreachable while open_holding enforces one lot per symbol, but if that ever changes a
+    # silent pick of the first would close the wrong position.
+    console.print(
+        f"[red]{len(matches)} open holdings in {symbol}.[/red] Pass the id instead: "
+        + ", ".join(f"{h.id} ({h.quantity:g} from {h.opened_on.date()})" for h in matches)
+    )
+    return None
+
+
+@app.command("fix-entry")
+def fix_entry(
+    target: str = typer.Argument(..., help="Symbol or holding id."),
+    price: float = typer.Option(..., "--price", "-p", help="What you actually paid per share."),
+) -> None:
+    """Replace an assumed entry price with the real one, once your broker shows it.
+
+    If the position was recorded by cash amount, the share count is re-derived so the cost basis
+    still equals what you actually spent. Correcting the price alone would leave a holding whose
+    quantity times price no longer matches the money that left your account -- a quieter error
+    than the one being fixed.
+    """
+    from app.portfolio.holdings import assess_entry, list_holdings
+
+    init_database()
+    if price <= 0:
+        console.print(f"[red]Price must be positive, got {price}.[/red]")
+        raise typer.Exit(code=1)
+
+    with session_scope() as session:
+        holding_id = _resolve_holding(session, target, list_holdings)
+        if holding_id is None:
+            raise typer.Exit(code=1)
+
+        holding = next(h for h in list_holdings(session) if h.id == holding_id)
+        was_price, was_quantity = holding.entry_price, holding.quantity
+
+        holding.entry_price = float(price)
+        holding.entry_price_estimated = False
+        if holding.entry_amount is not None and holding.entry_fx_rate:
+            holding.quantity = (holding.entry_amount / holding.entry_fx_rate) / float(price)
+        session.flush()
+
+        console.print(
+            f"[green]Corrected {holding.symbol}:[/green] entry {was_price:,.4f} -> "
+            f"{price:,.4f}"
+        )
+        if holding.quantity != was_quantity:
+            console.print(
+                f"[dim]Shares re-derived from the {holding.entry_amount:,.2f} "
+                f"{holding.entry_amount_currency} you spent: {was_quantity:.6f} -> "
+                f"{holding.quantity:.6f}[/dim]"
+            )
+        # A correction is exactly when the gap between the signal and the fill becomes
+        # visible, so the same check runs here.
+        levels = _levels_from_strategy(
+            session, holding.symbol, holding.strategy_name, holding.opened_on.date()
+        )
+        if levels is not None:
+            quality = assess_entry(
+                float(price), levels[3], holding.stop_price, holding.take_profit_price
+            )
+            if quality is not None and quality.is_material:
+                console.print()
+                console.print(
+                    Panel(
+                        quality.describe(),
+                        title="[yellow]Your fill is not the trade that was signalled[/yellow]",
+                        expand=False,
+                    )
+                )
+
+        if holding.closed_on is not None:
+            console.print(
+                "[yellow]This position is already closed, so its recorded P&L was computed "
+                "from the old entry and is now stale.[/yellow] Re-record the sale to refresh it."
+            )
+
+    _sync_positions_file()
 
 @app.command("holdings")
 def show_holdings(
@@ -1827,12 +2019,17 @@ def show_holdings(
                     status = f"open, checked {holding.last_checked_on.date()}"
 
             colour = "green" if (pnl or 0) >= 0 else "red"
+            # An assumed entry is marked on the row itself. A footnote would be read by nobody
+            # scanning a table of numbers.
+            entry_cell = f"{holding.entry_price:g}"
+            if holding.entry_price_estimated:
+                entry_cell = f"[yellow]~{holding.entry_price:g}[/yellow]"
             table.add_row(
                 str(holding.id),
                 holding.symbol,
                 holding.region,
                 f"{holding.quantity:g}",
-                f"{holding.entry_price:g}",
+                entry_cell,
                 last,
                 f"[{colour}]{pnl:+,.2f}[/{colour}]" if pnl is not None else "-",
                 f"[{colour}]{pct:+.2f}[/{colour}]" if pct is not None else "-",
@@ -1845,6 +2042,13 @@ def show_holdings(
             "Open positions are marked at the latest stored close, which is not a price you "
             "can trade at.[/dim]"
         )
+        if any(h.entry_price_estimated for h in rows):
+            console.print(
+                "[yellow]~ marks an assumed entry price[/yellow] -- taken from the close on "
+                "the day it was recorded, because none was supplied. Those P&L figures are "
+                "against an assumption. Fix one with: "
+                "[bold]python -m app fix-entry SYMBOL --price <what you paid>[/bold]"
+            )
 
         performance = realised_performance(session)
         if performance["n_closed"]:
@@ -2078,7 +2282,7 @@ def show_alerts(limit: int = typer.Option(20, "--limit", "-n")) -> None:
 
 def _levels_from_strategy(
     session, symbol: str, strategy_name: str, on: date
-) -> "tuple[float, float, str] | None":
+) -> "tuple[float, float, str, float] | None":
     """The stop and target the strategy proposed as of ``on``.
 
     Taken from the strategy rather than invented so the levels the watch checks are the levels
@@ -2101,6 +2305,7 @@ def _levels_from_strategy(
         round(float(decision.stop_price), 4),
         round(float(decision.take_profit_price), 4),
         f"{strategy_name} as of the {frame.index[-1].date()} close",
+        float(frame["close"].iloc[-1]),
     )
 
 @app.command("paper")
