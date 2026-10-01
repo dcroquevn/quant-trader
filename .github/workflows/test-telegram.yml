@@ -9,7 +9,7 @@
 # is the common case and needs no round trip to diagnose. The token is never echoed in full: the
 # summary gets pasted into chats.
 
-name: Test Telegram
+name: 3. Test Telegram (run this once)
 
 on:
   workflow_dispatch:

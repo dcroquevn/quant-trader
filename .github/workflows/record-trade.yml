@@ -23,7 +23,7 @@
 #   evicted after about a week of disuse, and while price history re-downloads in minutes,
 #   nothing can rebuild what you bought.
 
-name: Record a trade or check a price
+name: 2. Record a trade or check a price
 
 on:
   workflow_dispatch:

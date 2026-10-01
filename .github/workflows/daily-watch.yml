@@ -30,7 +30,7 @@
 #   convenience. Re-run `python -m app buy ...` after an eviction, or commit the database to a
 #   private repository if you would rather not.
 
-name: Daily watch
+name: 1. Daily watch (runs itself every weekday)
 
 on:
   schedule:

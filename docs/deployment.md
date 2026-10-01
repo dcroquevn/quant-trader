@@ -131,6 +131,32 @@ input the first time so nothing is sent while you check the output.
 
 For Option B, also set **Settings → Pages → Source → GitHub Actions**.
 
+## The four workflows, and which one to run
+
+They are numbered in the Actions sidebar so the list explains itself.
+
+| | What it is | When you run it |
+|---|---|---|
+| **1. Daily watch** | The whole point. Downloads bars, checks your positions, sends Telegram. | Never — it runs itself at 21:30 UTC on weekdays. Run it by hand only to test. |
+| **2. Record a trade or check a price** | The phone form. `check` a price, or record a `buy`/`sell`. | Whenever you trade, or before you do. |
+| **3. Test Telegram** | Sends one message, nothing else. | Once, after setting the secrets. Then never again. |
+| **4. Publish digest** | Deploys the page to GitHub Pages. | **Never, on this repository.** Pages on the free plan serves from public repos, so this will fail. Kept because it works unchanged if the repo ever goes public. |
+
+Only **1** and **2** matter day to day, and **1** needs no attention at all.
+
+### "Queued" and nothing happens
+
+Normal for a few seconds to a couple of minutes — GitHub is finding a runner. If it sits
+queued much longer than that, the usual causes, in order of likelihood:
+
+1. **Actions minutes exhausted.** Private repositories meter them. Check
+   **Settings → Billing and plans → Plans and usage**. This is the one I could not verify
+   against current GitHub pricing, so check your own figure.
+2. **A concurrency group is holding it.** `Daily watch` and `Record a trade` share one, on
+   purpose — two jobs writing the same SQLite file at once would corrupt it. If one is running,
+   the other waits. `Test Telegram` is in no group and never waits for this reason.
+3. **A GitHub incident.** [githubstatus.com](https://www.githubstatus.com/).
+
 ## Recording a trade from your phone
 
 `python -m app buy` needs a terminal, and the moment you most want to record a trade is the moment

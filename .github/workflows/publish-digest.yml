@@ -29,7 +29,7 @@
 #   This job downloads bars fresh each time. It takes a few minutes longer than restoring a cache
 #   and removes the only path by which a cached database could reach a public artifact.
 
-name: Publish digest
+name: 4. Publish digest (needs a PUBLIC repo - will fail here)
 
 # MANUAL ONLY, deliberately.
 #
