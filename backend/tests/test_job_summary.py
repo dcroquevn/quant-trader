@@ -44,14 +44,15 @@ class _Benchmark:
     symbol: str
 
 
-def _digest_data(rows: list[_Row]) -> dict:
+def _digest_data(rows: list[_Row], *, declared: int | None = None) -> dict:
+    """``declared`` larger than ``len(rows)`` is the partial-download state."""
     return {
         "generated_at": datetime(2026, 9, 30, 12, 0, tzinfo=timezone.utc),
         "stalest": ("AAPL", datetime(2026, 9, 29).date()),
         "regions": [
             {
                 "region": "Emerging Asia",
-                "specs": [object()] * 21,
+                "specs": [object()] * (declared if declared is not None else len(rows)),
                 "rows": rows,
                 "n_buy": sum(1 for r in rows if r.action == "BUY"),
                 "n_sell": sum(1 for r in rows if r.action == "SELL"),
@@ -123,6 +124,46 @@ class TestMarketSummary:
         assert "No entry or exit conditions hold" in text
         assert "normal" in text
         assert "915 entries" in text, "the claim must cite the measured figure"
+
+    def test_a_partial_download_is_not_reported_as_a_full_scan(
+        self, summary_file, monkeypatch
+    ):
+        """Found by running the workflow against an empty database.
+
+        With 4 of 42 instruments downloaded the summary printed "21" for the region, which reads
+        as "21 checked, nothing fired" when the truth was "2 checked, 19 unknown". The reassuring
+        reading was the false one.
+        """
+        rows = [_Row("TSM", "HOLD", 0.5, 456.94, 1.0), _Row("EWY", "HOLD", 0.5, 187.1, 1.0)]
+        monkeypatch.setattr(
+            "app.reporting.digest.collect_digest_data",
+            lambda *a, **k: _digest_data(rows, declared=21),
+        )
+        monkeypatch.setattr(
+            "app.__main__.find_asset", lambda symbol, market=None: _Spec(symbol)
+        )
+        _write_market_summary(object(), "trend_momentum")
+        text = summary_file.read_text(encoding="utf-8")
+
+        assert "2 of 21" in text
+        assert "19 instrument(s) could not be evaluated" in text
+        assert "would not have been seen" in text, (
+            "the consequence has to be stated, not just the count"
+        )
+
+    def test_a_complete_scan_does_not_raise_a_false_alarm(self, summary_file, monkeypatch):
+        """A warning on every run is a warning on none."""
+        rows = [_Row("TSM", "HOLD", 0.5, 456.94, 1.0)]
+        monkeypatch.setattr(
+            "app.reporting.digest.collect_digest_data", lambda *a, **k: _digest_data(rows)
+        )
+        monkeypatch.setattr(
+            "app.__main__.find_asset", lambda symbol, market=None: _Spec(symbol)
+        )
+        _write_market_summary(object(), "trend_momentum")
+        text = summary_file.read_text(encoding="utf-8")
+        assert "could not be evaluated" not in text
+        assert "| 1 |" in text
 
     def test_stale_data_is_flagged(self, summary_file, monkeypatch):
         data = _digest_data([])

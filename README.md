@@ -71,7 +71,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 760 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 864 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -810,11 +810,20 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 760 tests (757 offline, 3 live)
+python -m pytest                          # 864 tests (861 offline, 3 live)
 python -m pytest -m 'not slow'            # skip the minutes-long integration tests
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
+python scripts/check_file_integrity.py    # source files zeroed by an interrupted write
 ```
+
+`check_file_integrity.py` exists because it happened: two source files were once found to be
+entirely NUL bytes, the signature of a write interrupted before the filesystem flushed. This
+repository lives on a OneDrive-synced path, which makes that more likely rather than less. The
+check is worth a script because every tool points away from the cause -- Python reports a
+`SyntaxError` at line 1, `git diff` says "Binary files differ" and shows nothing, and `grep`
+silently matches nothing. Recovery is `git checkout --` for anything committed, so committing
+often is the real mitigation.
 
 The suite is offline by default; provider behaviour is exercised through a test
 double. Notable test groups:

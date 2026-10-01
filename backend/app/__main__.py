@@ -2259,14 +2259,32 @@ def _write_market_summary(session, strategy_name: str) -> None:
             "",
         ]
 
-    lines += ["| Region | Instruments | Entry conditions hold | Exit conditions hold | Benchmark |",
-              "|---|---:|---:|---:|---|"]
+    # "Evaluated" is the count that was actually scanned, which is not the count declared
+    # whenever an instrument has too little stored history. Printing only the declared number
+    # would report 21 instruments checked when 4 were -- reassuring and false.
+    lines += ["| Region | Evaluated | Entry conditions hold | Exit conditions hold | Benchmark |",
+              "|---|---|---:|---:|---|"]
+    gaps = []
     for entry in data["regions"]:
+        declared, scanned = len(entry["specs"]), len(entry["rows"])
+        shown = str(scanned) if scanned == declared else f"**{scanned} of {declared}**"
+        if scanned < declared:
+            gaps.append((entry["region"], declared - scanned))
         lines.append(
-            f"| {entry['region']} | {len(entry['specs'])} | {entry['n_buy']} | "
+            f"| {entry['region']} | {shown} | {entry['n_buy']} | "
             f"{entry['n_sell']} | {entry['benchmark'].symbol or 'none'} |"
         )
     lines.append("")
+
+    if gaps:
+        missing = ", ".join(f"{n} in {region}" for region, n in gaps)
+        lines += [
+            f":warning: **{sum(n for _, n in gaps)} instrument(s) could not be evaluated** "
+            f"({missing}): not enough stored history. They are absent from the counts above, so "
+            "a signal on one of them would not have been seen. Normal on a first run while the "
+            "download fills in; investigate if it persists.",
+            "",
+        ]
 
     # Only the instruments where something actually fired. A HOLD row is not news.
     signals = [
