@@ -324,6 +324,24 @@ class Strategy(abc.ABC):
             index=frame.index,
         )
 
+    def propose_levels(self, frame: pd.DataFrame) -> "tuple[float, float] | None":
+        """Stop and target for a position opened now, independent of the current signal.
+
+        Returns ``(stop, target)`` or None when the strategy does not define levels, or the data
+        does not support them.
+
+        Separate from :meth:`evaluate` because the two answer different questions. Whether to
+        enter is a signal and can change between the close that produced it and the next
+        session, when the trade is actually made. Where the risk ends is a volatility
+        measurement and is defined regardless -- so a position recorded the day after a signal
+        still gets a stop, rather than being stored unprotected because the reading moved
+        overnight.
+
+        The default returns None: a strategy that proposes no levels says so rather than having
+        some invented for it.
+        """
+        return None
+
     def describe(self) -> dict[str, Any]:
         """Serialisable identity, persisted with backtests and signals."""
         return {

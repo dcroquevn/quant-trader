@@ -2133,6 +2133,80 @@ def fix_entry(
 
     _sync_positions_file()
 
+
+@app.command("set-levels")
+def set_levels(
+    target_holding: str = typer.Argument(..., help="Symbol or holding id."),
+    stop: float = typer.Option(None, "--stop", help="Explicit stop. Default: from the strategy."),
+    take_profit: float = typer.Option(
+        None, "--target", help="Explicit target. Default: from the strategy."
+    ),
+) -> None:
+    """Give a position its stop and target, or replace the ones it has.
+
+    A holding with no stop is not a cautious position, it is an unmonitored one: the watch can
+    only report a trend break and nothing defines where the risk ends.
+
+    With no arguments the levels come from the strategy's own volatility measurement on the
+    latest bar, which is what the backtest used. Supplying your own is fine, but then the exit
+    alerts are measuring a rule this project has never tested.
+    """
+    from app.portfolio.holdings import list_holdings
+
+    init_database()
+    with session_scope() as session:
+        holding_id = _resolve_holding(session, target_holding, list_holdings)
+        if holding_id is None:
+            raise typer.Exit(code=1)
+
+        holding = next(h for h in list_holdings(session) if h.id == holding_id)
+        before = (holding.stop_price, holding.take_profit_price)
+
+        if stop is None or take_profit is None:
+            derived = _levels_from_strategy(
+                session, holding.symbol, holding.strategy_name, holding.opened_on.date()
+            )
+            if derived is None:
+                console.print(
+                    f"[red]Could not derive levels for {holding.symbol}.[/red] Not enough "
+                    "stored history. Pass --stop and --target explicitly, or run "
+                    f"`python -m app download-data --symbols {holding.symbol}` first."
+                )
+                raise typer.Exit(code=1)
+            stop = stop if stop is not None else derived[0]
+            take_profit = take_profit if take_profit is not None else derived[1]
+            console.print(f"[dim]Levels from {derived[2]}.[/dim]")
+
+        if stop >= holding.entry_price:
+            console.print(
+                f"[red]A stop at {stop:,.2f} is at or above the entry {holding.entry_price:,.2f}"
+                "[/red], so it would trigger immediately."
+            )
+            raise typer.Exit(code=1)
+        if take_profit <= holding.entry_price:
+            console.print(
+                f"[red]A target at {take_profit:,.2f} is at or below the entry "
+                f"{holding.entry_price:,.2f}[/red], so it would trigger immediately."
+            )
+            raise typer.Exit(code=1)
+
+        holding.stop_price = float(stop)
+        holding.take_profit_price = float(take_profit)
+        session.flush()
+
+        console.print(
+            f"[green]{holding.symbol}:[/green] stop {before[0]} -> {stop:,.4f}, "
+            f"target {before[1]} -> {take_profit:,.4f}"
+        )
+        risk = (holding.entry_price - stop) / holding.entry_price * 100
+        reward = (take_profit - holding.entry_price) / holding.entry_price * 100
+        console.print(
+            f"[dim]Against your entry of {holding.entry_price:,.2f}: risk {risk:.2f}%, "
+            f"reward {reward:.2f}%, reward-to-risk {reward / risk:.2f}x.[/dim]"
+        )
+
+    _sync_positions_file()
+
 @app.command("holdings")
 def show_holdings(
     all_: bool = typer.Option(False, "--all", help="Include closed positions."),
@@ -2277,6 +2351,14 @@ def watch_holdings(
                 f"[red]cannot evaluate[/red]", f"[red]{outcome.problem[:60]}[/red]",
             )
             continue
+        # A position with no stop is not a cautious one, it is an unmonitored one.
+        if outcome.usable and not outcome.has_stop:
+            console.print(
+                f"[yellow]{outcome.symbol} has no stop recorded[/yellow], so only a trend "
+                "break can close it and nothing defines where its risk ends. Fix with: "
+                f"[bold]python -m app set-levels {outcome.symbol}[/bold]"
+            )
+
         if outcome.exit_triggered:
             ago = outcome.sessions_since_trigger or 0
             fired = (
@@ -2559,12 +2641,27 @@ def _levels_from_strategy(
 
     strategy = build_strategy(strategy_name)
     decision = strategy.evaluate(frame, in_position=False)
-    if decision.stop_price is None or decision.take_profit_price is None:
-        return None
+
+    stop = decision.stop_price
+    target = decision.take_profit_price
+    basis = f"{strategy_name} as of the {frame.index[-1].date()} close"
+
+    if stop is None or target is None:
+        # The entry conditions are not currently met, which is the normal case when recording:
+        # a signal computed on one close is acted on the next session. The levels are a
+        # volatility measurement rather than part of the signal, so they are still available --
+        # and a position recorded without them would be watched for a trend break and nothing
+        # else, with no stop defining its risk.
+        levels = strategy.propose_levels(frame)
+        if levels is None:
+            return None
+        stop, target = levels
+        basis += f" (levels only; {strategy_name} does not signal an entry there)"
+
     return (
-        round(float(decision.stop_price), 4),
-        round(float(decision.take_profit_price), 4),
-        f"{strategy_name} as of the {frame.index[-1].date()} close",
+        round(float(stop), 4),
+        round(float(target), 4),
+        basis,
         float(frame["close"].iloc[-1]),
     )
 

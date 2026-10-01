@@ -138,6 +138,9 @@ class WatchOutcome:
 
     liquidity_caveat: str = ""
 
+    has_stop: bool = True
+    """False when no stop is recorded, so nothing defines where this position's risk ends."""
+
     entry_price_estimated: bool = False
     """True when the entry price was assumed rather than reported.
 
@@ -192,6 +195,7 @@ class WatchOutcome:
             "problem": self.problem,
             "liquidity_caveat": self.liquidity_caveat,
             "entry_price_estimated": self.entry_price_estimated,
+            "has_stop": self.has_stop,
         }
 
 
@@ -348,6 +352,7 @@ def check_holdings(
             take_profit_price=holding.take_profit_price,
             liquidity_caveat=spec.liquidity_caveat,
             entry_price_estimated=holding.entry_price_estimated,
+            has_stop=holding.stop_price is not None,
         )
 
         try:

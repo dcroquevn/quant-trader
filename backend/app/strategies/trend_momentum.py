@@ -334,6 +334,33 @@ class TrendMomentumStrategy(Strategy):
     # Decision
     # ------------------------------------------------------------------ #
 
+    def propose_levels(self, frame: "pd.DataFrame") -> "tuple[float, float] | None":
+        """The same ``close - k x ATR`` stop and ``R``-multiple target, without needing a BUY.
+
+        Uses the last bar with a usable ATR. A position recorded a day or two after the signal
+        still gets the levels the backtest would have used, instead of none at all.
+        """
+        if frame.empty or "atr_14" not in frame.columns or "close" not in frame.columns:
+            return None
+
+        usable = frame[frame["atr_14"].notna() & frame["close"].notna()]
+        if usable.empty:
+            return None
+
+        row = usable.iloc[-1]
+        close, atr = float(row["close"]), float(row["atr_14"])
+        if close <= 0 or atr <= 0:
+            return None
+
+        stop = close - self.p.stop_atr_multiple * atr
+        # An ATR exceeding the price means corrupt data, not a wide stop. The entry path
+        # refuses to size against it and so does this one.
+        if stop <= 0:
+            return None
+
+        target = close + self.p.take_profit_r_multiple * (close - stop)
+        return stop, target
+
     def _decide(self, row: pd.Series, in_position: bool) -> Decision:
         features = {
             key: (None if pd.isna(row[key]) else float(row[key]))

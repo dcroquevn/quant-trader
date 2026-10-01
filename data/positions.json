@@ -15,10 +15,10 @@
   "market": "USA",
   "opened_on": "2026-10-01",
   "quantity": 0.05793307534714318,
-  "stop_price": null,
+  "stop_price": 327.1698,
   "strategy_name": "trend_momentum",
   "strategy_params": null,
   "symbol": "GOOGL",
-  "take_profit_price": null
+  "take_profit_price": 394.8105
  }
 ]

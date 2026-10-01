@@ -252,3 +252,123 @@ class TestExitBaseRates:
 
         assert EXIT_BASE_RATES["take_profit"] < EXIT_BASE_RATES["stop_loss"]
         assert EXIT_BASE_RATES["take_profit"] == pytest.approx(0.214, abs=0.01)
+
+
+class TestLevelsWithoutASignal:
+    """Levels must survive the signal going away.
+
+    Found in production. A GOOGL purchase recorded from the phone the day after a BUY was stored
+    with no stop and no target, because `Decision` carries levels only on its BUY branch and the
+    reading had moved overnight. The watch could then only ever report a trend break, and nothing
+    defined where the position's risk ended.
+
+    Two different questions were being answered by one value. Whether to enter is a signal and
+    changes between the close that produced it and the session it is acted on. Where the risk ends
+    is a volatility measurement, and it is defined whenever ATR is.
+    """
+
+    @pytest.fixture
+    def frames(self):
+        """A rising synthetic series with real features computed on it.
+
+        Synthetic rather than loaded, because a test that skips when the database happens to be
+        empty proves nothing -- and these two assert the property the production bug violated.
+        """
+        import numpy as np
+        import pandas as pd
+
+        from app.indicators.registry import compute_features
+
+        # An uptrend that oscillates, ending part-way up a leg. The parameters are not
+        # decorative: a plain exponential rally saturates RSI near 100 and never clears the
+        # band, while a late pullback deep enough to fix RSI turns MACD and ROC negative. This
+        # combination clears all seven conditions, which is what the test below needs in order
+        # to compare the two code paths at all.
+        n = 400
+        index = pd.bdate_range(end=pd.Timestamp("2026-09-30"), periods=n)
+        t = np.arange(n)
+        closes = 100.0 * (1.0 + 0.0013) ** t * (1.0 + 0.035 * np.sin(t / 22.0 * 2 * np.pi + 1.8))
+
+        volume = np.full(n, 8_000_000.0)
+        volume[-6:] = 14_000_000.0  # recent pickup, so relative volume clears its floor
+
+        frame = pd.DataFrame(
+            {
+                "open": closes,
+                "high": closes * 1.010,
+                "low": closes * 0.990,
+                "close": closes,
+                "adj_close": closes,
+                "volume": volume,
+            },
+            index=index,
+        )
+        frame.index.name = "ts"
+        return compute_features(frame)
+
+    def test_levels_exist_even_when_the_action_is_not_buy(self, frames) -> None:
+        from app.strategies.registry import build_strategy
+
+        strategy = build_strategy("trend_momentum")
+        decision = strategy.evaluate(frames, in_position=False)
+        levels = strategy.propose_levels(frames)
+
+        assert levels is not None, "a volatility measurement should not depend on the signal"
+        stop, target = levels
+        assert 0 < stop < target
+
+        if decision.action.value != "BUY":
+            assert decision.stop_price is None, "fixture no longer covers the non-BUY case"
+
+    def test_they_match_the_decision_when_it_does_signal(self, frames) -> None:
+        """The fallback must be the same arithmetic, not a second rule.
+
+        If these diverged, a position recorded on the signal day and one recorded the next would
+        be watched against different levels, and neither would match the backtest.
+        """
+        from app.strategies.registry import build_strategy
+
+        strategy = build_strategy("trend_momentum")
+        decision = strategy.evaluate(frames, in_position=False)
+        assert decision.stop_price is not None, (
+            "the synthetic series was built to signal an entry; if it stopped doing so the "
+            "fixture no longer tests what this asserts"
+        )
+
+        stop, target = strategy.propose_levels(frames)
+        assert stop == pytest.approx(decision.stop_price)
+        assert target == pytest.approx(decision.take_profit_price)
+
+    def test_the_base_class_proposes_nothing_by_default(self) -> None:
+        """A strategy with no levels says so rather than having some invented for it."""
+        import pandas as pd
+
+        from app.strategies.base import Strategy
+
+        assert Strategy.propose_levels(object(), pd.DataFrame()) is None
+
+    def test_corrupt_data_yields_no_levels_rather_than_a_negative_stop(self) -> None:
+        """An ATR above the price means bad data, not a wide stop."""
+        import pandas as pd
+
+        from app.strategies.registry import build_strategy
+
+        strategy = build_strategy("trend_momentum")
+        frame = pd.DataFrame({"close": [10.0], "atr_14": [50.0]})
+        assert strategy.propose_levels(frame) is None
+
+    def test_an_empty_or_unusable_frame_yields_none(self) -> None:
+        import numpy as np
+        import pandas as pd
+
+        from app.strategies.registry import build_strategy
+
+        strategy = build_strategy("trend_momentum")
+        assert strategy.propose_levels(pd.DataFrame()) is None
+        assert strategy.propose_levels(pd.DataFrame({"close": [1.0]})) is None
+        assert (
+            strategy.propose_levels(
+                pd.DataFrame({"close": [np.nan], "atr_14": [np.nan]})
+            )
+            is None
+        )
