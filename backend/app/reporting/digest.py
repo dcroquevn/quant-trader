@@ -127,6 +127,14 @@ padding:16px 18px;margin:0 0 18px}
 .dot.trend{background:#3987e5}.dot.stop{background:var(--neg)}
 .dot.target{background:var(--pos)}.dot.time{background:var(--dim)}
 .note-inline{border-left:2px solid var(--line);padding-left:11px}
+.vsbench{background:var(--bg);border:1px solid var(--line);border-radius:6px;
+padding:12px 14px;margin:12px 0 0}
+.vsrow{display:flex;justify-content:space-between;gap:12px;font-size:12.5px;
+padding:5px 0;color:#b8c0d0}
+.vsrow b{font-variant-numeric:tabular-nums}
+.vsrow.total{border-top:1px solid var(--line);margin-top:4px;padding-top:9px;color:var(--text)}
+.vsrow .up{color:var(--pos)}.vsrow .down{color:var(--neg)}
+.exits td.n{font-weight:500}
 @media (max-width:640px){
   th,td{padding:5px 6px;font-size:11.5px}
   .wrap{padding:18px 12px 48px}
@@ -527,18 +535,31 @@ def _exit_rules_block() -> str:
 """
 
 
-def _trend_line(symbol: str, window: list[tuple[str, float]]) -> "list[float] | None":
-    """EMA50 over the charted window, aligned to it.
+def _trend_series(symbol: str, market: str, dates: list[str]) -> "list[float] | None":
+    """The strategy's own EMA50, aligned to the charted dates.
 
-    Computed from the window's own closes rather than loaded, because the digest already has
-    them and a second database round trip per position would buy nothing. The first 49 points
-    are NaN by definition and the renderer skips them, so the line starts where it becomes
-    meaningful instead of being drawn from a half-formed average.
+    Loaded rather than recomputed from the charted window. An EMA over 90 points is not the
+    same number as an EMA over the full history -- 346.19 against 345.27 on the position that
+    exposed this -- and the strategy acts on the second. A line close enough to look right while
+    being a different quantity is worse than one that is obviously wrong.
     """
-    if len(window) < 50:
+    from app.backtesting.runner import load_features
+    from app.core.exceptions import InsufficientDataError
+    from app.database.base import session_scope
+
+    try:
+        with session_scope() as session:
+            frames, _ = load_features(session, [symbol], market)
+    except (InsufficientDataError, KeyError, LookupError):
         return None
-    closes = pd.Series([c for _, c in window], dtype="float64")
-    return closes.ewm(span=50, adjust=False, min_periods=50).mean().tolist()
+
+    frame = frames.get(symbol)
+    if frame is None or "ema_50" not in frame.columns:
+        return None
+
+    by_date = {str(i.date()): v for i, v in frame["ema_50"].items()}
+    aligned = [by_date.get(d) for d in dates]
+    return aligned if any(v is not None and v == v for v in aligned) else None
 
 
 def _fill_quality(holding: Any):
@@ -559,6 +580,146 @@ def _fill_quality(holding: Any):
         return None
 
 
+def _vs_benchmark(holding: Any, history: dict[str, Any]) -> str:
+    """How the position has done against its region's benchmark since the entry date.
+
+    The comparison a single position cannot make for itself: would owning the index instead
+    have done better? Over one position it settles nothing, and the sample size is stated so it
+    cannot be read as if it did.
+    """
+    from app.core.universe import benchmark_for_region
+
+    try:
+        benchmark = benchmark_for_region(holding.region)
+    except KeyError:
+        return ""
+    if not benchmark.symbol:
+        return ""
+
+    entry_date = holding.opened_on.date().isoformat()
+    mine = [(d, c) for d, c in history.get(holding.symbol, []) if d >= entry_date]
+    theirs = [(d, c) for d, c in history.get(benchmark.symbol, []) if d >= entry_date]
+    if len(mine) < 2 or len(theirs) < 2:
+        return (
+            '<p class="sub">Not enough sessions since you bought to compare against '
+            f"{_esc(benchmark.symbol)} yet.</p>"
+        )
+
+    # Against the entry price actually paid, not the first close after it: the question is what
+    # happened to the money, and the money went in at the fill.
+    mine_pct = (mine[-1][1] / holding.entry_price - 1) * 100
+    theirs_pct = (theirs[-1][1] / theirs[0][1] - 1) * 100
+    gap = mine_pct - theirs_pct
+    sessions = len(mine)
+
+    verdict = "ahead of" if gap > 0 else "behind"
+    return f"""
+<div class="vsbench">
+  <div class="vsrow"><span>{_esc(holding.symbol)} since you bought</span>
+    <b class="{'up' if mine_pct >= 0 else 'down'}">{mine_pct:+.2f}%</b></div>
+  <div class="vsrow"><span>{_esc(benchmark.symbol)} over the same {sessions} sessions</span>
+    <b class="{'up' if theirs_pct >= 0 else 'down'}">{theirs_pct:+.2f}%</b></div>
+  <div class="vsrow total"><span>You are {verdict} simply owning the region</span>
+    <b class="{'up' if gap >= 0 else 'down'}">{gap:+.2f}%</b></div>
+  <p class="sub" style="margin-top:8px">One position over {sessions} sessions decides nothing
+  &mdash; a gap this size is what randomness looks like at this sample. It becomes a question
+  worth asking after a dozen closed trades, not before.</p>
+</div>
+"""
+
+
+def _how_to_hold(
+    holding: Any, outcome: Any, last: float | None, trend: "list[float] | None"
+) -> str:
+    """Each exit rule, where it stands, and how far the price is from triggering it.
+
+    Not advice. The rules are fixed and were chosen before the position existed; what this adds
+    is the distance to each one, so "what has to happen" is visible instead of being asked for.
+    """
+    if last is None:
+        return ""
+
+    rows = []
+
+    def distance(level: float, direction: str) -> tuple[str, str]:
+        """How far the price is from a level, or that it is already past it.
+
+        A signed percentage is only a distance while the level is still ahead. Once the price
+        has crossed, the same number reads as "it has this far to go", which is the opposite of
+        what happened.
+        """
+        move = (level / last - 1) * 100
+        crossed = (direction == "below" and last <= level) or (
+            direction == "above" and last >= level
+        )
+        if crossed:
+            return "ALREADY", f"price is {'under' if direction == 'below' else 'over'} it"
+        return f"{move:+.1f}%", ""
+
+    if holding.stop_price:
+        away, note = distance(holding.stop_price, "below")
+        rows.append(
+            ("stop", "Stop", f"{holding.stop_price:,.2f}", away,
+             (note + ". " if note else "") + "A fall of this much closes it at a loss."
+             if not note else
+             "The price is already at or under the stop. A backtest would have closed this.")
+        )
+    else:
+        rows.append(
+            ("stop", "Stop", "none", "&mdash;",
+             "Nothing defines where the risk ends. Set one.")
+        )
+
+    if holding.take_profit_price:
+        away, note = distance(holding.take_profit_price, "above")
+        rows.append(
+            ("target", "Target", f"{holding.take_profit_price:,.2f}", away,
+             "The price is already at or over the target."
+             if note else
+             "A rise of this much closes it at a profit. It happened 21% of the time.")
+        )
+
+    trend_detail = "The close falling under the 50-day average. The most common ending, 40%."
+    trend_level, trend_away = "moving", "&mdash;"
+    if trend:
+        recent = [v for v in trend if v is not None and v == v]
+        if recent:
+            ema = recent[-1]
+            trend_level = f"{ema:,.2f}"
+            trend_away, note = distance(ema, "below")
+            trend_detail += (
+                " The close is already under it, so this condition currently holds."
+                if note
+                else " It moves with the price, so this level changes daily."
+            )
+    rows.append(("trend", "Trend break", trend_level, trend_away, trend_detail))
+
+    held = (date.today() - holding.opened_on.date()).days
+    rows.append(
+        ("time", "Time", "60 sessions", f"{held} days in",
+         "About 85 calendar days. Rare, and usually profitable when it happens.")
+    )
+
+    cells = "".join(
+        f'<tr><td><span class="dot {cls}"></span>{label}</td><td class="n">{level}</td>'
+        f'<td class="n">{away}</td><td class="dim">{detail}</td></tr>'
+        for cls, label, level, away, detail in rows
+    )
+
+    return f"""
+<div class="teach" style="margin-top:14px">
+  <h3>Holding this one</h3>
+  <p>The rules were fixed before you bought. What follows is where each stands today &mdash;
+  not what to do, which is yours.</p>
+  <table class="exits"><tbody>{cells}</tbody></table>
+  <p class="note-inline">Doing nothing is the default and usually the right one. The backtest's
+  median winner took <b>36 sessions</b> to reach its target while the median loser was out in
+  <b>8</b>; what carried the whole sample was a small number of positions left alone for more
+  than a month. Checking a position daily and acting on what you see is how that gets undone.</p>
+</div>
+"""
+
+
 def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
     """One held position: the chart, the numbers, and what has to happen for it to end."""
     points = history.get(holding.symbol, [])
@@ -570,7 +731,7 @@ def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
     ) - 90)
     window = points[start_index:]
 
-    trend = _trend_line(holding.symbol, window)
+    trend = _trend_series(holding.symbol, holding.market, [d for d, _ in window])
     chart = position_chart(
         PositionChartData(
             symbol=holding.symbol,
@@ -630,6 +791,15 @@ def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
         state = (
             f'<span class="tag sell">{_esc(outcome.exit_reason)} &mdash; {when}</span>'
         )
+    elif outcome.decision_action == "SELL":
+        # Nothing has fired: the backtester fills a signal exit at the *next* session's open,
+        # so a condition met on today's close becomes an exit tomorrow. Saying "within the
+        # rules" here would contradict the table below, which already reports the condition as
+        # met, and the reader would conclude one of the two is broken.
+        state = (
+            '<span class="tag sell">today&rsquo;s close meets an exit condition &mdash; '
+            "the rule acts on the next session&rsquo;s open</span>"
+        )
     else:
         state = '<span class="tag buy">within the rules</span>'
 
@@ -684,6 +854,8 @@ def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
   <dl class="pstats">{cells}</dl>
   {fill_note}
   {warning_html}
+  {_vs_benchmark(holding, history)}
+  {_how_to_hold(holding, outcome, last, trend)}
 </div>
 """
 
