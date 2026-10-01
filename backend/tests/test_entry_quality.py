@@ -190,3 +190,65 @@ class TestEntryQuality:
         assert assess_entry(351.44, 344.08, None, 394.81) is None
         assert assess_entry(351.44, 344.08, 327.17, None) is None
         assert assess_entry(351.44, 0.0, 327.17, 394.81) is None
+
+
+class TestTelegramDocument:
+    """Sending the digest as a file, so reading it does not require a desktop.
+
+    The artifact route was six steps -- log in, find the run, scroll, download a zip, extract,
+    open. A page whose purpose is to be glanceable does not survive that.
+    """
+
+    def test_an_unconfigured_notifier_fails_without_raising(self, tmp_path) -> None:
+        from app.notifications.telegram import TelegramNotifier
+
+        page = tmp_path / "digest.html"
+        page.write_text("<html></html>", encoding="utf-8")
+        result = TelegramNotifier(token="", chat_id="").send_document(page)
+        assert result.delivered is False
+        assert "TELEGRAM_BOT_TOKEN" in result.detail
+
+    def test_a_missing_file_is_reported_not_raised(self, tmp_path) -> None:
+        from app.notifications.telegram import TelegramNotifier
+
+        result = TelegramNotifier(token="t", chat_id="c").send_document(
+            tmp_path / "absent.html"
+        )
+        assert result.delivered is False
+        assert "no such file" in result.detail
+
+    def test_an_oversized_file_is_refused_with_its_size(self, tmp_path) -> None:
+        """A rejected upload would otherwise look like a network failure."""
+        from app.notifications.telegram import DOCUMENT_LIMIT_BYTES, TelegramNotifier
+
+        page = tmp_path / "huge.html"
+        page.write_bytes(b"x" * (DOCUMENT_LIMIT_BYTES + 1))
+        result = TelegramNotifier(token="t", chat_id="c").send_document(page)
+        assert result.delivered is False
+        assert "limit is 50MB" in result.detail
+
+    def test_a_subjectless_notification_does_not_start_with_blank_lines(self) -> None:
+        """The digest message is its own heading; "subject\n\nbody" would add two blank lines."""
+        from app.notifications.base import Notification
+
+        assert Notification(
+            kind="digest", subject="", body="line one", dedupe_key="k"
+        ).as_text() == "line one"
+        assert Notification(
+            kind="exit", subject="Subject", body="body", dedupe_key="k"
+        ).as_text() == "Subject\n\nbody"
+
+
+class TestExitBaseRates:
+    def test_they_sum_to_one(self) -> None:
+        """They partition 915 trades; drifting apart would mean one was edited in isolation."""
+        from app.__main__ import EXIT_BASE_RATES
+
+        assert sum(EXIT_BASE_RATES.values()) == pytest.approx(1.0, abs=0.005)
+
+    def test_the_target_is_the_minority_outcome(self) -> None:
+        """The headline fact: the target is reached about a fifth of the time."""
+        from app.__main__ import EXIT_BASE_RATES
+
+        assert EXIT_BASE_RATES["take_profit"] < EXIT_BASE_RATES["stop_loss"]
+        assert EXIT_BASE_RATES["take_profit"] == pytest.approx(0.214, abs=0.01)

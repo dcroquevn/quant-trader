@@ -23,16 +23,16 @@
 #   evicted after about a week of disuse, and while price history re-downloads in minutes,
 #   nothing can rebuild what you bought.
 
-name: Record a trade
+name: Record a trade or check a price
 
 on:
   workflow_dispatch:
     inputs:
       action:
-        description: 'What you did'
+        description: 'What you want'
         type: choice
-        options: [buy, sell]
-        default: buy
+        options: [check, buy, sell]
+        default: check
         required: true
       symbol:
         description: 'Which instrument'
@@ -91,7 +91,7 @@ on:
         options: [USD, CLP]
         default: USD
       price:
-        description: 'Price per share. Blank uses the last close, flagged as an estimate.'
+        description: 'Price per share. Required for check; blank on a buy estimates it.'
         type: string
         default: ''
       note:
@@ -157,7 +157,13 @@ jobs:
           if [ -n "${{ inputs.price }}" ]; then ARGS="$ARGS --price ${{ inputs.price }}"; fi
           if [ -n "${{ inputs.note }}" ]; then ARGS="$ARGS --note '${{ inputs.note }}'"; fi
 
-          if [ "${{ inputs.action }}" = "buy" ]; then
+          if [ "${{ inputs.action }}" = "check" ]; then
+            if [ -z "${{ inputs.price }}" ]; then
+              echo "::error::A check needs the price you were quoted."
+              exit 1
+            fi
+            python -m app check "${{ inputs.symbol }}" --price "${{ inputs.price }}"
+          elif [ "${{ inputs.action }}" = "buy" ]; then
             if [ -z "${{ inputs.amount }}" ]; then
               echo "::error::A buy needs an amount -- the cash you spent."
               exit 1
@@ -179,13 +185,22 @@ jobs:
             echo "## ${{ inputs.action }} ${{ inputs.symbol }}"
             echo
             echo '```'
-            python -m app holdings --all || true
+            if [ "${{ inputs.action }}" = "check" ]; then
+              python -m app check "${{ inputs.symbol }}" --price "${{ inputs.price }}" || true
+            else
+              python -m app holdings --all || true
+            fi
             echo '```'
             echo
-            echo "_Recorded what you did. No order was placed; nothing here can place one._"
+            if [ "${{ inputs.action }}" = "check" ]; then
+              echo "_Nothing was recorded. This is arithmetic and a historical base rate, not a recommendation._"
+            else
+              echo "_Recorded what you did. No order was placed; nothing here can place one._"
+            fi
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Commit the positions file
+        if: inputs.action != 'check'
         run: |
           if git diff --quiet -- data/positions.json; then
             echo "No change to data/positions.json."

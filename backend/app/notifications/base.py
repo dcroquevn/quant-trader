@@ -53,7 +53,9 @@ class Notification:
         raised UnicodeEncodeError mid-alert. A notification that crashes the notifier is a
         notification nobody gets.
         """
-        return f"{self.subject}\n\n{self.body}"
+        # A notification with no subject -- the daily digest, whose first line is its own
+        # heading -- would otherwise open with two blank lines.
+        return f"{self.subject}\n\n{self.body}" if self.subject else self.body
 
 
 @dataclass(frozen=True, slots=True)

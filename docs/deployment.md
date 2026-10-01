@@ -141,7 +141,7 @@ unwatched position, so that friction is not cosmetic.
 
 | Field | Buy | Sell |
 |---|---|---|
-| action | `buy` | `sell` |
+| action | `check`, `buy` or `sell` | |
 | symbol | the ticker, e.g. `SQM` | the **holding id**, e.g. `3` |
 | quantity | shares bought | ignored |
 | price | what you paid per share | what you received |
@@ -149,8 +149,14 @@ unwatched position, so that friction is not cosmetic.
 | fees | commission and taxes | commission and taxes |
 | note | why | why |
 
-The run prints your holdings in its summary, and commits the updated positions file. It places no
-order and cannot: there is no broker connection anywhere in this project.
+**`check` records nothing.** It answers "I am about to pay this — what does it do to the setup?",
+which is the question that arrives at the same moment and in the same place as the trade. It shows
+the risk, the reward and the ratio at your price against the signal's, plus how 915 backtest trades
+actually ended. It does not say whether to buy, because nothing in this project establishes that
+the strategy is profitable at any entry price.
+
+A `buy` or `sell` prints your holdings in the summary and commits the updated positions file. It
+places no order and cannot: there is no broker connection anywhere in this project.
 
 The holding id for a sell comes from the daily watch summary, from the Telegram alert (every exit
 alert ends with the exact `app sell <id>` command), or from `python -m app holdings`.
@@ -219,8 +225,18 @@ What exists instead, in descending order of how often you will use it:
 
 ### 1. Telegram — the thing that matters
 
-A message arrives when an exit rule fires on a position you recorded. This is the entire point of
-the daily run; everything else is context. Nothing to open, nothing to check.
+Two messages a day, and nothing to open:
+
+* **The digest summary** — what fired, and where each region sits. Readable in the notification
+  itself.
+* **The digest page attached** — the charts and every instrument, one tap away when the summary
+  raises a question.
+
+Plus an alert, separately, whenever an exit rule fires on a position you recorded. That is the
+entire point of the daily run; everything else is context.
+
+The summary goes first on purpose: a document notification shows only a filename, so sending just
+the attachment would make you open a file every day to learn that nothing happened.
 
 ### 2. The Actions job summary — your phone dashboard
 

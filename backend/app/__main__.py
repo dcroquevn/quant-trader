@@ -1636,6 +1636,165 @@ def _print_projection(result: dict, *, n_matches: int = 0) -> None:
 # --------------------------------------------------------------------------- #
 
 
+
+# Measured on TRAIN (2016-2021), 915 trades across all three regions. Recomputed by
+# scripts in the repository history; see the horizon section of the README.
+EXIT_BASE_RATES = {
+    "take_profit": 0.214,
+    "stop_loss": 0.332,
+    "trend_break": 0.398,
+    "other": 0.056,
+}
+"""How backtest trades ended, as fractions. Entries at the signal price, not at a worse one.
+
+Stated as a base rate rather than a probability for this trade: it is what happened to a
+different set of positions under the same rules, which is the most that history offers.
+"""
+
+
+@app.command("check")
+def check_price(
+    symbol: str = typer.Argument(..., help="Canonical symbol, e.g. GOOGL."),
+    price: float = typer.Option(
+        ..., "--price", "-p", help="The price you would pay, or were just quoted."
+    ),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+) -> None:
+    """Show what paying this price does to the setup the scanner signalled.
+
+    This does NOT say whether to buy. Nothing in this project establishes that the strategy is
+    profitable, so there is no basis here for that answer. What it shows is the arithmetic and
+    the historical base rate, which is what you would otherwise work out by hand.
+    """
+    from app.portfolio.holdings import assess_entry
+    from app.strategies.registry import build_strategy
+    from app.strategies.scanner import scan_market
+
+    setup_logging()
+    init_database()
+
+    if price <= 0:
+        console.print(f"[red]Price must be positive, got {price}.[/red]")
+        raise typer.Exit(code=1)
+
+    canonical = symbol.strip().upper()
+    try:
+        spec = find_asset(canonical)
+    except KeyError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(code=1) from exc
+
+    strategy = build_strategy(strategy_name)
+    with session_scope() as session:
+        result = scan_market(session, strategy, spec.market, symbols=[canonical],
+                             log_decisions=False)
+
+    if not result.rows:
+        console.print(
+            f"[red]No reading for {canonical}.[/red] Run "
+            f"`python -m app download-data --symbols {canonical}` first."
+        )
+        raise typer.Exit(code=1)
+
+    row = result.rows[0]
+    console.print()
+    console.print(
+        f"[bold]{canonical}[/bold] -- {spec.name}  [dim]({spec.region})[/dim]"
+    )
+    console.print(
+        f"Strategy says [bold]{row.action}[/bold] as of the {row.as_of:%Y-%m-%d} close "
+        f"at {row.price:,.2f}."
+    )
+    console.print(f"[dim]{row.score_description}[/dim]")
+
+    if row.action != "BUY":
+        console.print()
+        console.print(
+            f"[yellow]The entry conditions do not currently hold[/yellow], so there is no "
+            f"signalled trade for a fill at {price:,.2f} to be compared against. "
+            "What follows is only the arithmetic of the levels."
+        )
+
+    if not row.stop_price or not row.take_profit_price:
+        console.print(
+            "[yellow]No stop or target was proposed, so there is nothing to compare.[/yellow]"
+        )
+        return
+
+    quality = assess_entry(price, row.price, row.stop_price, row.take_profit_price)
+    table = Table(title=f"A fill at {price:,.2f}", header_style="bold cyan")
+    for column in ("", f"at the signal price {row.price:,.2f}", f"at {price:,.2f}"):
+        table.add_column(column, overflow="fold")
+
+    risk_signal = (row.price - row.stop_price) / row.price * 100
+    risk_paid = (price - row.stop_price) / price * 100
+    reward_signal = (row.take_profit_price - row.price) / row.price * 100
+    reward_paid = (row.take_profit_price - price) / price * 100
+
+    table.add_row("Stop", f"{row.stop_price:,.2f}", f"{row.stop_price:,.2f}")
+    table.add_row("Target", f"{row.take_profit_price:,.2f}", f"{row.take_profit_price:,.2f}")
+    table.add_row("Risk to stop", f"{risk_signal:.2f}%", f"[yellow]{risk_paid:.2f}%[/yellow]")
+    table.add_row(
+        "Reward to target", f"{reward_signal:.2f}%", f"[yellow]{reward_paid:.2f}%[/yellow]"
+    )
+    before = quality.reward_risk_signalled if quality else None
+    after = quality.reward_risk_paid if quality else None
+    table.add_row(
+        "Reward / risk",
+        f"{before:.2f}x" if before else "-",
+        f"[yellow]{after:.2f}x[/yellow]" if after and after > 0 else "[red]broken[/red]",
+    )
+    console.print()
+    console.print(table)
+
+    if after is not None and after <= 0:
+        console.print(
+            f"[red]At {price:,.2f} you are at or past the target, or at or under the "
+            "stop.[/red] The levels from this signal do not describe that trade at all."
+        )
+    elif quality is not None and quality.is_material:
+        console.print(
+            f"[yellow]Paying {quality.slippage_pct:+.2f}% versus the signal price changes the "
+            f"reward-to-risk from {before:.2f}x to {after:.2f}x.[/yellow] The levels do not "
+            "move with your fill -- the stop is placed by the strategy's volatility estimate, "
+            "not as a percentage below what you pay -- so the whole difference lands here."
+        )
+    else:
+        console.print(
+            f"[green]The setup is materially what was signalled[/green] "
+            f"({before:.2f}x against {after:.2f}x)."
+        )
+
+    console.print()
+    console.print("[bold]What happened to trades under these rules, historically[/bold]")
+    console.print(
+        f"[dim]915 backtest trades on TRAIN (2016-2021), entered at the signal price "
+        f"-- not at a worse one:[/dim]"
+    )
+    for reason, share in EXIT_BASE_RATES.items():
+        console.print(f"  {reason.replace('_', ' '):<14} {share * 100:>5.1f}%")
+    console.print(
+        "[dim]The target was reached about a fifth of the time. Those are base rates for a "
+        "different set of positions under the same rules, which is the most history offers.[/dim]"
+    )
+
+    if spec.liquidity_caveat:
+        console.print()
+        console.print(f"[yellow]{spec.liquidity_caveat}[/yellow]")
+
+    console.print()
+    console.print(
+        Panel(
+            "This is arithmetic and a historical base rate. It is NOT a recommendation.\n"
+            "Nothing in this project establishes that this strategy is profitable at any "
+            "entry price, so there is no basis here for 'yes, buy' or 'no, do not'.\n"
+            "Two of every three backtest trades lost money; what carried the sample was a "
+            "small number of winners held for more than a month.",
+            title="[bold]What this does not tell you[/bold]",
+            expand=False,
+        )
+    )
+
 @app.command("buy")
 def record_buy(
     symbol: str = typer.Argument(..., help="Canonical symbol, e.g. SQM."),
@@ -2396,6 +2555,11 @@ def build_digest(
         "--summary",
         help="Also append a market overview to $GITHUB_STEP_SUMMARY, for scheduled runs.",
     ),
+    send: bool = typer.Option(
+        False,
+        "--send",
+        help="Also send it to Telegram: a text summary, with the page attached.",
+    ),
 ) -> None:
     """Write a self-contained HTML digest of the universe as it stands today.
 
@@ -2433,6 +2597,129 @@ def build_digest(
     if summary:
         with session_scope() as session:
             _write_market_summary(session, strategy_name)
+
+    if send:
+        with session_scope() as session:
+            _send_digest(session, written, strategy_name)
+
+
+def _digest_telegram_text(data: "dict") -> str:
+    """The day's state as plain text, short enough to read in a notification.
+
+    ASCII only: this has to survive a cp1252 console on the way out and arbitrary phone fonts on
+    the way in. Deliberately not a copy of the HTML -- what belongs here is what the user needs
+    to decide whether to open anything.
+    """
+    stamp = data["generated_at"]
+    lines = [f"[quant-trader] {stamp:%Y-%m-%d} market digest", ""]
+
+    stalest = data.get("stalest")
+    if stalest is not None:
+        symbol, last = stalest
+        age = (stamp.date() - last).days
+        if age > 5:
+            lines += [
+                f"WARNING: the newest stored bar is {last}, {age} days old ({symbol}). "
+                "Everything below is computed from stale data.",
+                "",
+            ]
+
+    signals = [
+        (entry["region"], row)
+        for entry in data["regions"]
+        for row in entry["rows"]
+        if row.action in {"BUY", "SELL"}
+    ]
+    if signals:
+        lines.append(f"{len(signals)} signal(s) today:")
+        for region, row in signals:
+            spec = find_asset(row.symbol, row.market)
+            price = f"{row.price:,.2f}" if row.price is not None else "n/a"
+            lines.append(f"  {row.action} {row.symbol} ({region}) at {price}")
+            if row.stop_price and row.take_profit_price:
+                lines.append(
+                    f"      stop {row.stop_price:,.2f}  target {row.take_profit_price:,.2f}"
+                    + (f"  reward/risk {row.risk_reward:.1f}x" if row.risk_reward else "")
+                )
+            if spec.is_thinly_traded:
+                lines.append("      thinly traded: modelled fills are optimistic")
+    else:
+        lines.append(
+            "No entry or exit conditions hold today. That is the normal case: the "
+            "2016-2021 backtest made about 13 entries a month across all 42 instruments."
+        )
+
+    lines += ["", "Where each region sits:"]
+    for entry in data["regions"]:
+        scanned, declared = len(entry["rows"]), len(entry["specs"])
+        coverage = f"{scanned}" if scanned == declared else f"{scanned} of {declared}"
+        lines.append(
+            f"  {entry['region']}: {coverage} evaluated, {entry['n_buy']} entry, "
+            f"{entry['n_sell']} exit, vs {entry['benchmark'].symbol or 'none'}"
+        )
+        if scanned < declared:
+            lines.append(
+                f"      {declared - scanned} could not be evaluated, so a signal on one of "
+                "them would not have been seen"
+            )
+
+    lines += [
+        "",
+        "A BUY means this strategy's entry conditions hold on historical data. It is not a "
+        "probability of profit and not a forecast. Nothing here says any instrument will rise "
+        "or fall.",
+        "",
+        "The attached page has the charts and every instrument.",
+    ]
+    return "\n".join(lines)
+
+
+def _send_digest(session, page: Path, strategy_name: str) -> None:
+    """Send the summary text, then the page itself.
+
+    Text first on purpose. A document notification shows only a filename, so sending just the
+    attachment would make the user open a file every day to discover that nothing happened.
+
+    A failed attachment does not undo the text: the summary is the part that matters, and losing
+    the charts is not worth losing it.
+    """
+    from app.notifications.base import Notification, build_notifier
+    from app.notifications.telegram import TelegramNotifier
+    from app.reporting.digest import collect_digest_data
+
+    notifier = build_notifier("telegram")
+    if not isinstance(notifier, TelegramNotifier):
+        console.print(f"[yellow]{TelegramNotifier().describe_setup()}[/yellow]")
+        return
+
+    data = collect_digest_data(session, strategy_name=strategy_name)
+    body = _digest_telegram_text(data)
+
+    result = notifier.send(
+        Notification(
+            kind="digest",
+            subject="",
+            body=body,
+            dedupe_key=f"digest:{data['generated_at']:%Y-%m-%d}",
+        )
+    )
+    if result.delivered:
+        console.print("[green]Digest summary sent to Telegram.[/green]")
+    else:
+        console.print(f"[red]Summary not delivered: {result.detail}[/red]")
+
+    attached = notifier.send_document(
+        page,
+        caption=f"quant-trader digest {data['generated_at']:%Y-%m-%d}",
+        filename=f"digest-{data['generated_at']:%Y-%m-%d}.html",
+    )
+    if attached.delivered:
+        console.print("[green]Digest page attached.[/green]")
+    else:
+        console.print(
+            f"[yellow]The page was not attached: {attached.detail}[/yellow] "
+            "The summary above still went out."
+        )
 
 
 def _write_market_summary(session, strategy_name: str) -> None:

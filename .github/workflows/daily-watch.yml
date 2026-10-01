@@ -130,9 +130,15 @@ jobs:
         if: always()
         env:
           PYTHONPATH: backend
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED: 'true'
           PAPER_TRADING: 'true'
           LIVE_TRADING: 'false'
-        run: python -m app digest --summary --output digest.html
+        # --send puts the summary and the page in Telegram. Without it the digest lives
+        # behind a login, an Actions page and a zip, which is six steps to read something
+        # whose whole purpose is to be glanceable.
+        run: python -m app digest --summary --send --output digest.html
 
       - name: Upload the digest
         if: always()

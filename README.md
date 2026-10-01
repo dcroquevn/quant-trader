@@ -72,7 +72,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 892 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 898 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -313,12 +313,14 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app robustness` | Stress-test one configuration |
 | `python -m app runs` | List stored searches and studies |
 | `python -m app project SYMBOL` | What followed similar historical situations |
-| `python -m app buy SYMBOL` | **Record** a purchase you already made. Orders nothing |
+| `python -m app check SYMBOL --price P` | What paying P does to the signalled setup. Not advice |
+| `python -m app buy SYMBOL --amount N` | **Record** a purchase by the cash spent. Orders nothing |
+| `python -m app fix-entry SYMBOL --price P` | Replace an assumed entry with the real fill |
 | `python -m app sell ID` | **Record** a sale you already made, and see the real P&L |
 | `python -m app holdings` | Positions you have recorded, marked at the latest close |
 | `python -m app watch` | Check every open position's exit rule and alert on what fired |
 | `python -m app alerts` | Every notification attempted, and whether it was delivered |
-| `python -m app digest` | Self-contained HTML digest with charts. No server needed |
+| `python -m app digest --send` | Build the digest and send it to Telegram |
 | `python -m app positions-export` | Write holdings to `data/positions.json` so they survive |
 | `python -m app positions-import` | Restore holdings from that file. Idempotent |
 | `python -m app prune-data` | Delete stored bars for instruments no longer in the universe |
@@ -838,7 +840,7 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 892 tests (889 offline, 3 live)
+python -m pytest                          # 898 tests (895 offline, 3 live)
 python -m pytest -m 'not slow'            # skip the minutes-long integration tests
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage

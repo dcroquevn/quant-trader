@@ -23,13 +23,21 @@ import json
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from pathlib import Path
 
 from app.core.logging import get_logger
 from app.notifications.base import Notification, NotificationResult, Notifier
 
 logger = get_logger(__name__)
 
-__all__ = ["TelegramNotifier", "TELEGRAM_API_BASE", "MESSAGE_LIMIT"]
+__all__ = [
+    "TelegramNotifier",
+    "TELEGRAM_API_BASE",
+    "MESSAGE_LIMIT",
+    "DOCUMENT_LIMIT_BYTES",
+    "CAPTION_LIMIT",
+]
 
 TELEGRAM_API_BASE = "https://api.telegram.org"
 
@@ -41,6 +49,15 @@ than discovered as a 400 from the API.
 """
 
 REQUEST_TIMEOUT_SECONDS = 15
+
+DOCUMENT_LIMIT_BYTES = 50 * 1024 * 1024
+"""Telegram's per-document ceiling. The digest is ~100KB, so this is a guard, not a constraint."""
+
+CAPTION_LIMIT = 1024
+"""Telegram rejects a longer caption outright, so it is clipped before sending."""
+
+DOCUMENT_TIMEOUT_SECONDS = 60
+"""An upload needs more headroom than a text message, and the daily job can afford to wait."""
 
 
 class TelegramNotifier(Notifier):
@@ -130,4 +147,95 @@ class TelegramNotifier(Notifier):
             "Get a token from @BotFather (free), send your bot a message, then read your "
             "chat id from https://api.telegram.org/bot<TOKEN>/getUpdates. "
             "Alerts print to the console until then."
+        )
+
+    # ------------------------------------------------------------------ #
+    # Files
+    # ------------------------------------------------------------------ #
+
+    def send_document(
+        self, path: "Path", *, caption: str = "", filename: str | None = None
+    ) -> NotificationResult:
+        """Upload a file to the chat.
+
+        Exists so the daily digest can arrive as something tappable instead of an artifact behind
+        a login, an Actions page and a zip. The whole point of the scheduled run is that the user
+        does not have to go anywhere, and a download that needs a desktop defeats it.
+
+        Telegram accepts up to 50MB per document; the digest is around 100KB, so the limit is not
+        a practical constraint but it is checked rather than assumed, because a rejected upload
+        would otherwise look like a network failure.
+
+        multipart/form-data is assembled by hand for the same reason the rest of this module uses
+        ``urllib``: one upload does not justify a dependency on the path that has to work
+        unattended.
+        """
+        if not self.configured:
+            return NotificationResult.failed(
+                self.name, "TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are not both set."
+            )
+        if not path.exists():
+            return NotificationResult.failed(self.name, f"no such file: {path}")
+
+        payload = path.read_bytes()
+        if len(payload) > DOCUMENT_LIMIT_BYTES:
+            return NotificationResult.failed(
+                self.name,
+                f"{path.name} is {len(payload) / 1_048_576:.1f}MB; Telegram's limit is "
+                f"{DOCUMENT_LIMIT_BYTES / 1_048_576:.0f}MB.",
+            )
+
+        boundary = f"----quanttrader{uuid.uuid4().hex}"
+        name = filename or path.name
+        # A caption longer than this is rejected outright, so it is clipped here rather than
+        # discovered as a 400 that looks like a bad token.
+        caption = caption[:CAPTION_LIMIT]
+
+        parts: list[bytes] = []
+
+        def field(key: str, value: str) -> None:
+            parts.append(
+                f'--{boundary}\r\nContent-Disposition: form-data; name="{key}"\r\n\r\n'
+                f"{value}\r\n".encode("utf-8")
+            )
+
+        field("chat_id", str(self._chat_id))
+        if caption:
+            field("caption", caption)
+        parts.append(
+            f'--{boundary}\r\nContent-Disposition: form-data; name="document"; '
+            f'filename="{name}"\r\nContent-Type: text/html\r\n\r\n'.encode("utf-8")
+        )
+        parts.append(payload)
+        parts.append(f"\r\n--{boundary}--\r\n".encode("utf-8"))
+        body = b"".join(parts)
+
+        request = urllib.request.Request(
+            f"{TELEGRAM_API_BASE}/bot{self._token}/sendDocument",
+            data=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+        )
+
+        try:
+            with urllib.request.urlopen(
+                request, timeout=DOCUMENT_TIMEOUT_SECONDS
+            ) as response:
+                result = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:400]
+            logger.warning("Telegram rejected the document: %s %s", exc.code, detail)
+            return NotificationResult.failed(self.name, f"HTTP {exc.code}: {detail}")
+        except urllib.error.URLError as exc:
+            return NotificationResult.failed(self.name, f"unreachable: {exc.reason}")
+        except (TimeoutError, OSError) as exc:
+            return NotificationResult.failed(self.name, f"{type(exc).__name__}: {exc}")
+        except json.JSONDecodeError as exc:
+            return NotificationResult.failed(self.name, f"unparseable response: {exc}")
+
+        if not result.get("ok"):
+            return NotificationResult.failed(
+                self.name, f"API returned ok=false: {result.get('description', result)}"
+            )
+        return NotificationResult.sent(
+            self.name, f"document {name} ({len(payload):,} bytes)"
         )
