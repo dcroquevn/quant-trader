@@ -131,6 +131,42 @@ input the first time so nothing is sent while you check the output.
 
 For Option B, also set **Settings → Pages → Source → GitHub Actions**.
 
+## If the Actions tab shows no workflows
+
+This happened on the first push of this repository, so it is worth writing down. The symptom:
+
+* **Actions** tab loads, says "0 workflow runs", and the left sidebar lists no workflow names.
+* `/actions/workflows/daily-watch.yml` returns **"This workflow does not exist"**.
+* **Settings → Actions → General** already shows "Allow all actions and reusable workflows".
+
+Everything verifiable was fine: both files present on the default branch, valid against GitHub's
+own published schema, no BOM, LF endings, correct `name` and triggers. GitHub simply had not
+indexed them.
+
+GitHub registers a workflow from the push event that carries the file. The remedy is a fresh push
+that touches it:
+
+```bash
+git commit --allow-empty -m "reindex" && git push    # if nothing needs changing
+```
+
+Both workflows now carry a `push` trigger scoped to their own path, so editing one re-registers it
+and runs it immediately. That doubles as a smoke test — a job that fires once a day unattended is
+one whose mistakes stay hidden until the night they matter.
+
+## Why publish-digest is manual only
+
+Its deploy step needs GitHub Pages, and Pages on the free plan serves from public repositories. On
+a private repository that step cannot succeed, so a daily schedule would produce a red X every
+weekday for a reason that is not a fault — and a job that always fails teaches you to ignore
+failures, which is expensive the day a real one appears.
+
+The schedule is commented out in the file rather than deleted. Uncomment it when Pages actually
+works for the repository: either it is public, or the plan serves Pages from private ones.
+
+Until then `daily-watch` is the daily job, and it needs no Pages: the job summary renders in the
+GitHub mobile app and Telegram carries the alerts.
+
 ## What you actually open
 
 There is **no file in the repository to open**, and this is the part most likely to send you
@@ -214,7 +250,7 @@ still will eventually.
 | Workflow | Schedule | What it does | Needs |
 |---|---|---|---|
 | `daily-watch.yml` | 21:30 UTC, Mon–Fri | Downloads bars, checks your positions, sends Telegram alerts, writes a job summary with both your positions and a market overview, attaches the digest as an artifact | Telegram secrets; a private repo |
-| `publish-digest.yml` | 22:00 UTC, Mon–Fri | Downloads bars, builds the static digest, deploys to Pages | Pages enabled; a public repo on the free plan |
+| `publish-digest.yml` | **manual only** | Downloads bars, builds the static digest, deploys to Pages | Pages enabled; a public repo on the free plan |
 
 21:30 UTC is after the US close with enough margin for the provider to settle the final bar.
 Actions cron is not punctual — a job can start 10–30 minutes late under load, and occasionally not

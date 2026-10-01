@@ -31,9 +31,17 @@
 
 name: Publish digest
 
+# MANUAL ONLY, deliberately.
+#
+# Pages on the free plan serves from a public repository. While this repository is private the
+# deploy step cannot succeed, so a daily schedule would mean a red X every weekday for a reason
+# that is not a fault -- and a job that always fails teaches you to ignore failures.
+#
+# Re-enable the schedule by uncommenting the block below once Pages actually works for this
+# repository: either it is public, or the plan serves Pages from private repositories.
 on:
-  schedule:
-    - cron: '00 22 * * 1-5'
+  # schedule:
+  #   - cron: '00 22 * * 1-5'
   workflow_dispatch:
 
 permissions:

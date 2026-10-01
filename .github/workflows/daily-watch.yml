@@ -45,6 +45,11 @@ on:
         description: 'Evaluate without sending or recording anything'
         type: boolean
         default: false
+  # Editing this file runs it. A job that fires once a day unattended is one whose mistakes
+  # stay hidden until the night they matter, and `paths` keeps ordinary code pushes out of it.
+  push:
+    paths:
+      - '.github/workflows/daily-watch.yml'
 
 # Two runs sharing one SQLite file would interleave writes. Queue instead.
 concurrency:
