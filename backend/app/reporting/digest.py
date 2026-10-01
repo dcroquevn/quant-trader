@@ -541,6 +541,24 @@ def _trend_line(symbol: str, window: list[tuple[str, float]]) -> "list[float] | 
     return closes.ewm(span=50, adjust=False, min_periods=50).mean().tolist()
 
 
+def _fill_quality(holding: Any):
+    """Where the entry landed inside its own day's range, or None if that bar is not stored."""
+    from app.database.base import session_scope
+    from app.portfolio.holdings import assess_fill
+
+    try:
+        with session_scope() as session:
+            return assess_fill(
+                session,
+                holding.symbol,
+                holding.entry_price,
+                holding.opened_on.date(),
+                holding.market,
+            )
+    except Exception:  # noqa: BLE001 -- a missing bar must not take the whole page down
+        return None
+
+
 def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
     """One held position: the chart, the numbers, and what has to happen for it to end."""
     points = history.get(holding.symbol, [])
@@ -627,6 +645,14 @@ def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
     ]
     cells = "".join(f"<div><dt>{k}</dt><dd>{v}</dd></div>" for k, v in rows)
 
+    # Where the fill landed in its day's range. The only part of a trade the user can
+    # actually improve, and the only way to tell whether a broker added a spread.
+    fill_note = ""
+    quality = _fill_quality(holding)
+    if quality is not None:
+        tone = "warn-inline" if (quality.percentile or 0) >= 75 else "sub"
+        fill_note = f'<p class="{tone}">{_esc(quality.describe())}</p>'
+
     warnings = []
     if holding.stop_price is None:
         warnings.append(
@@ -656,6 +682,7 @@ def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
   &middot; via {_esc(holding.broker) or 'your broker'}</p>
   {chart}
   <dl class="pstats">{cells}</dl>
+  {fill_note}
   {warning_html}
 </div>
 """

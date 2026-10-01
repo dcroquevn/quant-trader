@@ -59,6 +59,8 @@ __all__ = [
     "PriceUnavailableError",
     "resolve_quantity",
     "assess_entry",
+    "assess_fill",
+    "FillQuality",
     "EntryQuality",
     "open_holding",
     "close_holding",
@@ -755,3 +757,104 @@ def import_positions(session: Session, rows: list[dict[str, Any]]) -> dict[str, 
             result["failed"] += 1
 
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class FillQuality:
+    """Where a fill landed inside its day's trading range.
+
+    The one part of this the user can actually get better at. Whether the strategy works is an
+    open question nothing here settles; whether a purchase went through near the day's high is a
+    fact, measurable the next morning, and changeable by using a limit order or not buying into
+    a rising open.
+
+    It also answers a question that otherwise has no answer: whether a broker added a spread.
+    A fill inside the day's range cannot have been marked up beyond what the market offered; a
+    fill above the high must have been.
+    """
+
+    symbol: str
+    paid: float
+    low: float
+    high: float
+    close: float
+    on: date
+
+    @property
+    def inside_range(self) -> bool:
+        return self.low <= self.paid <= self.high
+
+    @property
+    def percentile(self) -> float | None:
+        """0 means the day's low, 100 the day's high. None if the bar had no range."""
+        span = self.high - self.low
+        return (self.paid - self.low) / span * 100 if span > 0 else None
+
+    @property
+    def cost_vs_low(self) -> float:
+        """What buying here rather than at the day's low cost, in percent."""
+        return (self.paid / self.low - 1.0) * 100 if self.low > 0 else 0.0
+
+    def describe(self) -> str:
+        """Plain ASCII, for the CLI, the digest and a Telegram message."""
+        if not self.inside_range:
+            if self.paid > self.high:
+                return (
+                    f"You paid {self.paid:,.2f}, above the whole range that day "
+                    f"({self.low:,.2f}-{self.high:,.2f}). The market never traded there, so "
+                    f"{(self.paid / self.high - 1) * 100:.2f}% of what you paid was a spread or "
+                    "a fee your broker added, not the price of the share."
+                )
+            return (
+                f"You paid {self.paid:,.2f}, below the day's low {self.low:,.2f}. That should "
+                "not be possible for a purchase; check the price and the date."
+            )
+
+        pct = self.percentile
+        if pct is None:
+            return f"The day's range was a single price, {self.paid:,.2f}."
+
+        where = (
+            "near the high" if pct >= 75
+            else "near the low" if pct <= 25
+            else "mid-range"
+        )
+        return (
+            f"Your {self.paid:,.2f} was {where} of the {self.on} range "
+            f"({self.low:,.2f}-{self.high:,.2f}, {pct:.0f}th percentile). No broker markup: the "
+            f"market traded there. Buying at the day's low would have cost "
+            f"{self.cost_vs_low:.2f}% less, which is the part of a trade you can actually "
+            "control -- the strategy's edge is not."
+        )
+
+
+def assess_fill(
+    session: Session, symbol: str, paid: float, on: date, market: str | None = None
+) -> FillQuality | None:
+    """Compare a fill against the day's actual range. None if that bar is not stored.
+
+    Returns None rather than approximating from a neighbouring day: a different session's range
+    would answer a different question and look like an answer to this one.
+    """
+    from app.data.engine import DataEngine
+
+    try:
+        bars = DataEngine(session).load(symbol, market, trim_carried_forward=True)
+    except (KeyError, LookupError):
+        return None
+    if bars.empty:
+        return None
+
+    same_day = bars[bars.index.date == on]
+    if same_day.empty:
+        return None
+
+    row = same_day.iloc[-1]
+    return FillQuality(
+        symbol=symbol,
+        paid=float(paid),
+        low=float(row["low"]),
+        high=float(row["high"]),
+        close=float(row["close"]),
+        on=on,
+    )

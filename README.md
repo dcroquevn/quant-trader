@@ -72,7 +72,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 910 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 913 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -840,9 +840,9 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 910 tests (907 offline, 3 live)
+python -m pytest                          # every offline test; live ones are deselected
 python -m pytest -m 'not slow'            # skip the minutes-long integration tests
-python -m pytest -m network               # 3 live provider tests
+python -m pytest -m network               # the live provider tests, deliberately
 python -m pytest --cov=backend/app        # with coverage
 python scripts/check_file_integrity.py    # source files zeroed by an interrupted write
 ```
@@ -855,8 +855,10 @@ check is worth a script because every tool points away from the cause -- Python 
 silently matches nothing. Recovery is `git checkout --` for anything committed, so committing
 often is the real mitigation.
 
-The suite is offline by default; provider behaviour is exercised through a test
-double. Notable test groups:
+The suite is offline by default -- `-m 'not network'` is in `addopts`, so it is enforced
+rather than remembered. Provider behaviour is exercised through a test double. The live
+tests exist and are worth running before trusting a provider, but they pass or fail with
+someone else's uptime, and a suite that does that is a suite whose failures nobody reads. Notable test groups:
 
 - **`test_lookahead_bias.py`** — truncation invariance across every feature, an AST
   scanner that rejects `center=True`, `bfill` and negative shifts outside the

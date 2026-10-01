@@ -10,6 +10,11 @@ addopts = [
     "-ra",
     "--strict-markers",
     "--strict-config",
+    # Offline by default, which the README claimed and this was not enforcing. Live tests pass
+    # or fail with someone else's uptime and rate limits, so including them made the suite
+    # non-deterministic -- two Banco Central tests passed alone and failed in a full run.
+    # Run them deliberately with: pytest -m network
+    "-m", "not network",
 ]
 markers = [
     "network: hits a live external data provider; deselect with -m 'not network'",

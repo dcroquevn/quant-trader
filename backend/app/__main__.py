@@ -2810,7 +2810,7 @@ def build_digest(
 
     if send:
         with session_scope() as session:
-            _send_digest(session, written, strategy_name)
+            _send_digest(session, strategy_name)
 
 
 def _digest_telegram_text(data: "dict") -> str:
@@ -2833,6 +2833,36 @@ def _digest_telegram_text(data: "dict") -> str:
                 "Everything below is computed from stale data.",
                 "",
             ]
+
+    holdings = data.get("holdings")
+    if holdings and holdings["rows"]:
+        open_rows = [h for h in holdings["rows"] if h.closed_on is None]
+        outcomes = {o.holding_id: o for o in holdings["watch"]}
+        if open_rows:
+            lines.append("YOUR POSITIONS")
+            for holding in open_rows:
+                outcome = outcomes.get(holding.id)
+                mark = ""
+                if outcome is not None and outcome.unrealised_pnl_pct is not None:
+                    mark = f"  {outcome.unrealised_pnl_pct:+.2f}%"
+                lines.append(
+                    f"  {holding.symbol}: {holding.quantity:g} at "
+                    f"{holding.entry_price:,.2f}{mark}"
+                )
+                if outcome is None or not outcome.usable:
+                    lines.append("      not checkable yet")
+                elif outcome.exit_triggered:
+                    ago = outcome.sessions_since_trigger or 0
+                    when = "today" if ago == 0 else f"{outcome.exit_triggered_on}"
+                    lines.append(f"      EXIT RULE FIRED ({outcome.exit_reason}, {when})")
+                else:
+                    stop = (
+                        f"stop {outcome.effective_stop:,.2f}"
+                        if outcome.effective_stop
+                        else "NO STOP RECORDED"
+                    )
+                    lines.append(f"      within the rules, {stop}")
+            lines.append("")
 
     signals = [
         (entry["region"], row)
@@ -2884,25 +2914,33 @@ def _digest_telegram_text(data: "dict") -> str:
     return "\n".join(lines)
 
 
-def _send_digest(session, page: Path, strategy_name: str) -> None:
-    """Send the summary text, then the page itself.
+def _send_digest(session, strategy_name: str) -> None:
+    """Send the summary text, then a copy of the page that includes your positions.
 
     Text first on purpose. A document notification shows only a filename, so sending just the
     attachment would make the user open a file every day to discover that nothing happened.
 
+    **The attachment here includes holdings, and the one written to disk does not.** The privacy
+    rule is about publishing: Pages on a free plan serves from a public repository, so a
+    published digest must not carry position data. Telegram is a private chat with one
+    recipient, and omitting their own positions from it made the daily message leave out the
+    only part about their money. Two destinations, two different files.
+
     A failed attachment does not undo the text: the summary is the part that matters, and losing
     the charts is not worth losing it.
     """
+    import tempfile
+
     from app.notifications.base import Notification, build_notifier
     from app.notifications.telegram import TelegramNotifier
-    from app.reporting.digest import collect_digest_data
+    from app.reporting.digest import collect_digest_data, render_digest
 
     notifier = build_notifier("telegram")
     if not isinstance(notifier, TelegramNotifier):
         console.print(f"[yellow]{TelegramNotifier().describe_setup()}[/yellow]")
         return
 
-    data = collect_digest_data(session, strategy_name=strategy_name)
+    data = collect_digest_data(session, strategy_name=strategy_name, include_holdings=True)
     body = _digest_telegram_text(data)
 
     result = notifier.send(
@@ -2918,13 +2956,20 @@ def _send_digest(session, page: Path, strategy_name: str) -> None:
     else:
         console.print(f"[red]Summary not delivered: {result.detail}[/red]")
 
-    attached = notifier.send_document(
-        page,
-        caption=f"quant-trader digest {data['generated_at']:%Y-%m-%d}",
-        filename=f"digest-{data['generated_at']:%Y-%m-%d}.html",
-    )
+    # Built into a temporary file rather than reusing the one on disk: that copy is attached
+    # to the workflow run and must stay free of position data.
+    with tempfile.TemporaryDirectory() as tmp:
+        private_page = Path(tmp) / f"digest-{data['generated_at']:%Y-%m-%d}.html"
+        private_page.write_text(render_digest(data), encoding="utf-8")
+
+        attached = notifier.send_document(
+            private_page,
+            caption=f"quant-trader digest {data['generated_at']:%Y-%m-%d}",
+            filename=private_page.name,
+        )
+
     if attached.delivered:
-        console.print("[green]Digest page attached.[/green]")
+        console.print("[green]Digest page attached (with your positions).[/green]")
     else:
         console.print(
             f"[yellow]The page was not attached: {attached.detail}[/yellow] "

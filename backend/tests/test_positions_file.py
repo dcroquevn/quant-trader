@@ -152,3 +152,76 @@ class TestRobustness:
     def test_an_empty_export_is_valid(self, stocked) -> None:
         assert export_positions(stocked) == []
         assert import_positions(stocked, []) == {"added": 0, "skipped": 0, "failed": 0}
+
+
+class TestFillQuality:
+    """Where a fill landed in its day's range.
+
+    The only part of a trade the user can improve: whether the strategy works is an open
+    question, but whether a purchase went through near the day's high is a fact they can change
+    with a limit order. It also settles whether a broker added a spread, which otherwise has no
+    answer.
+    """
+
+    @pytest.fixture
+    def with_bars(self, stocked):
+        import numpy as np
+        import pandas as pd
+
+        from app.database.models import Asset, Bar
+
+        asset = stocked.query(Asset).filter_by(symbol="GOOGL", market_code="USA").one()
+        index = pd.bdate_range(end=pd.Timestamp("2026-10-01"), periods=5)
+        for i, stamp in enumerate(index):
+            stocked.add(
+                Bar(
+                    asset_id=asset.id,
+                    timeframe="1D",
+                    ts=stamp.to_pydatetime(),
+                    open=340.0,
+                    high=353.22,
+                    low=335.51,
+                    close=338.24,
+                    adj_close=338.24,
+                    volume=33_000_000.0,
+                )
+            )
+        stocked.flush()
+        return stocked
+
+    def test_a_fill_inside_the_range_rules_out_a_markup(self, with_bars) -> None:
+        from app.portfolio.holdings import assess_fill
+
+        quality = assess_fill(with_bars, "GOOGL", 351.44, date(2026, 10, 1))
+        assert quality is not None
+        assert quality.inside_range
+        assert quality.percentile == pytest.approx(90, abs=1)
+        assert "No broker markup" in quality.describe()
+
+    def test_it_quantifies_what_a_worse_entry_cost(self, with_bars) -> None:
+        from app.portfolio.holdings import assess_fill
+
+        quality = assess_fill(with_bars, "GOOGL", 351.44, date(2026, 10, 1))
+        assert quality.cost_vs_low == pytest.approx(4.75, abs=0.05)
+        assert "4.75% less" in quality.describe()
+
+    def test_a_fill_above_the_high_is_named_as_a_markup(self, with_bars) -> None:
+        """The market never traded there, so the difference came from somewhere else."""
+        from app.portfolio.holdings import assess_fill
+
+        quality = assess_fill(with_bars, "GOOGL", 360.0, date(2026, 10, 1))
+        assert not quality.inside_range
+        text = quality.describe()
+        assert "above the whole range" in text
+        assert "spread or a fee" in text
+
+    def test_a_missing_bar_returns_none_rather_than_a_nearby_day(self, with_bars) -> None:
+        """A different session's range would answer a different question and look like an answer."""
+        from app.portfolio.holdings import assess_fill
+
+        assert assess_fill(with_bars, "GOOGL", 351.44, date(2020, 1, 2)) is None
+
+    def test_it_is_ascii_only(self, with_bars) -> None:
+        from app.portfolio.holdings import assess_fill
+
+        assess_fill(with_bars, "GOOGL", 351.44, date(2026, 10, 1)).describe().encode("ascii")
