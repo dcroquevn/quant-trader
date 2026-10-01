@@ -2560,8 +2560,13 @@ def notify_test() -> None:
     )
 
     if result.delivered:
+        console.print(f"[green]Telegram accepted it.[/green] {result.detail}")
         console.print(
-            f"[green]Delivered.[/green] {result.detail} -- check your phone."
+            "[yellow]If nothing arrived, compare the chat id above with the conversation you "
+            "are looking at.[/yellow] Telegram reports success as soon as it accepts the "
+            "message, so a message delivered to the wrong chat looks exactly like this. The "
+            "id must be YOUR account's -- get it from @userinfobot -- and the conversation to "
+            f"watch is the one with the bot named in the token check above."
         )
         return
 

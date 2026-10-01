@@ -131,7 +131,17 @@ class TelegramNotifier(Notifier):
             return NotificationResult.failed(
                 self.name, f"API returned ok=false: {body.get('description', body)}"
             )
-        return NotificationResult.sent(self.name, f"message_id {body['result']['message_id']}")
+
+        # Name the chat it landed in. "Sent" alone cannot be told apart from "delivered
+        # somewhere you are not looking", which is the one failure the API reports as success.
+        sent = body.get("result", {})
+        chat = sent.get("chat", {})
+        who = chat.get("username") or chat.get("title") or chat.get("first_name") or "?"
+        return NotificationResult.sent(
+            self.name,
+            f"message {sent.get('message_id')} delivered to chat {chat.get('id')} "
+            f"({who}, {chat.get('type', '?')})",
+        )
 
     def describe_setup(self) -> str:
         """What the user has to do, for the CLI to print when it is not configured."""

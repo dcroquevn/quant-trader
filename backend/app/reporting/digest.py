@@ -29,6 +29,7 @@ from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.backtesting.report import _CSS
@@ -45,6 +46,11 @@ from app.core.universe import (
     universe_for_region,
 )
 from app.data.engine import DataEngine
+from app.reporting.position_chart import (
+    READOUT_SCRIPT,
+    PositionChartData,
+    position_chart,
+)
 from app.reporting.charts import (
     SERIES,
     Bar,
@@ -69,6 +75,7 @@ margin:0 0 20px}
 .tag{font-size:10px;padding:2px 6px;border-radius:3px;border:1px solid var(--line);
 color:var(--dim);white-space:nowrap}
 .tag.thin{border-color:rgba(255,184,77,.4);color:var(--warn)}
+.phead .tag{white-space:normal;max-width:100%;line-height:1.45;flex:1 1 180px}
 .tag.buy{border-color:rgba(38,217,138,.4);color:var(--pos)}
 .tag.sell{border-color:rgba(255,92,124,.4);color:var(--neg)}
 .priv{background:rgba(77,159,255,.06);border:1px solid rgba(77,159,255,.28);border-radius:6px;
@@ -90,6 +97,36 @@ padding:14px 16px;margin:0 0 14px}
 .signal .why li{font-size:11.5px;color:#b8c0d0;margin:3px 0}
 .signal .lv{display:flex;flex-wrap:wrap;gap:16px;margin-top:8px;font-size:11.5px}
 .signal .lv b{font-variant-numeric:tabular-nums;color:var(--text);font-weight:600}
+.position{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+padding:16px 18px;margin:0 0 18px}
+.phead{display:flex;align-items:baseline;flex-wrap:wrap;gap:10px}
+.phead h3{margin:0;font-size:20px;letter-spacing:-.01em}
+.pnl{font-size:20px;font-variant-numeric:tabular-nums;font-weight:600}
+.pnl.up{color:var(--pos)}.pnl.down{color:var(--neg)}
+.poschart{margin:14px 0 10px}
+.poschart svg{max-width:100%}
+.readout{font-size:12px;color:var(--dim);font-variant-numeric:tabular-nums;
+background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:7px 10px;
+margin:0 0 8px;min-height:17px;text-align:center}
+.readout.up{color:var(--pos)}.readout.down{color:var(--neg)}
+.pstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(104px,1fr));gap:9px;
+margin:12px 0 0}
+.pstats div{background:var(--bg);border:1px solid var(--line);border-radius:5px;padding:7px 9px}
+.pstats dt{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em}
+.pstats dd{margin:3px 0 0;font-size:14px;font-variant-numeric:tabular-nums;color:var(--text)}
+.warn-inline{font-size:11.5px;line-height:1.5;color:var(--warn);margin:10px 0 0}
+.teach{background:var(--panel);border:1px solid var(--line);border-radius:8px;
+padding:16px 18px;margin:0 0 18px}
+.teach h3{margin:0 0 8px;font-size:15px}
+.teach p{font-size:12.5px;line-height:1.6;color:#b8c0d0;margin:8px 0 0}
+.exits{margin:10px 0 0;font-size:12.5px}
+.exits td{text-align:left;vertical-align:top;padding:7px 8px}
+.exits td.n{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.exits td.dim{color:var(--dim)}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:6px}
+.dot.trend{background:#3987e5}.dot.stop{background:var(--neg)}
+.dot.target{background:var(--pos)}.dot.time{background:var(--dim)}
+.note-inline{border-left:2px solid var(--line);padding-left:11px}
 @media (max-width:640px){
   th,td{padding:5px 6px;font-size:11.5px}
   .wrap{padding:18px 12px 48px}
@@ -436,51 +473,236 @@ def _region_section(entry: dict[str, Any]) -> str:
 """
 
 
-def _holdings_section(holdings: dict[str, Any]) -> str:
+def _exit_rules_block() -> str:
+    """What actually closes a position, and in what proportion.
+
+    Written because the obvious reading of a target -- that it marks where the price is expected
+    to turn -- is wrong, and acting on that reading leads somewhere different from acting on the
+    rule. The target is a pre-committed exit at three times the risk taken. It says nothing
+    about what the price will do next.
+    """
+    return """
+<div class="teach">
+  <h3>How a position ends</h3>
+  <p>Four rules can close this. Whichever comes first wins, and the percentages are how often
+  each one actually ended a trade across 915 backtest trades (2016&ndash;2021).</p>
+  <table class="exits">
+    <tbody>
+      <tr>
+        <td><span class="dot trend"></span><b>Trend break</b></td>
+        <td>The close falls below the 50-day average.</td>
+        <td class="n">39.8%</td>
+        <td class="n dim">median &minus;1.0%</td>
+      </tr>
+      <tr>
+        <td><span class="dot stop"></span><b>Stop</b></td>
+        <td>Price reaches the lower line. Placed two ATR below the entry bar&rsquo;s close
+        &mdash; a volatility measurement, not a round number.</td>
+        <td class="n">33.2%</td>
+        <td class="n dim">median &minus;3.7%</td>
+      </tr>
+      <tr>
+        <td><span class="dot target"></span><b>Target</b></td>
+        <td>Price reaches the upper line, three times the risk above the entry.</td>
+        <td class="n">21.4%</td>
+        <td class="n dim">median +10.3%</td>
+      </tr>
+      <tr>
+        <td><span class="dot time"></span><b>Time</b></td>
+        <td>60 trading days pass.</td>
+        <td class="n">1.6%</td>
+        <td class="n dim">median +10.8%</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note-inline"><b>The target is not a prediction.</b> It does not mark where the price
+  is expected to turn &mdash; nothing in this project forecasts that. It is a level chosen in
+  advance so the decision to take a profit is made before there is a profit to be emotional
+  about, at three times what you were risking. The price may keep rising after you sell. It may
+  also not reach the target at all: four times out of five it did not.</p>
+  <p class="note-inline">Notice which row is largest. <b>The trend break ends more positions
+  than the stop and the target</b>, and it is the one with no line on the chart &mdash; it
+  depends on the moving average, drawn dashed.</p>
+</div>
+"""
+
+
+def _trend_line(symbol: str, window: list[tuple[str, float]]) -> "list[float] | None":
+    """EMA50 over the charted window, aligned to it.
+
+    Computed from the window's own closes rather than loaded, because the digest already has
+    them and a second database round trip per position would buy nothing. The first 49 points
+    are NaN by definition and the renderer skips them, so the line starts where it becomes
+    meaningful instead of being drawn from a half-formed average.
+    """
+    if len(window) < 50:
+        return None
+    closes = pd.Series([c for _, c in window], dtype="float64")
+    return closes.ewm(span=50, adjust=False, min_periods=50).mean().tolist()
+
+
+def _position_block(holding: Any, outcome: Any, history: dict[str, Any]) -> str:
+    """One held position: the chart, the numbers, and what has to happen for it to end."""
+    points = history.get(holding.symbol, [])
+    entry_date = holding.opened_on.date().isoformat()
+    # Context before the entry, so it is not pinned to the left edge. 90 sessions is about four
+    # months, long enough to show the trend the entry was taken in.
+    start_index = max(0, next(
+        (i for i, (d, _) in enumerate(points) if d >= entry_date), len(points)
+    ) - 90)
+    window = points[start_index:]
+
+    trend = _trend_line(holding.symbol, window)
+    chart = position_chart(
+        PositionChartData(
+            symbol=holding.symbol,
+            name="",
+            points=window,
+            entry_price=holding.entry_price,
+            entry_date=entry_date,
+            stop_price=holding.stop_price,
+            take_profit_price=holding.take_profit_price,
+            quantity=holding.quantity,
+            trend=trend,
+            exit_triggered_on=(
+                holding.exit_signal_on.date().isoformat() if holding.exit_signal_on else None
+            ),
+            exit_reason=holding.exit_signal_reason,
+        )
+    )
+
+    # Mark from the newest stored close regardless of whether the exit rule could be
+    # evaluated. Those are different questions: the rule needs a bar *after* the entry, which
+    # does not exist on the day you buy, while marking the position needs only a price.
+    last = window[-1][1] if window else None
+    pnl_pct = (last / holding.entry_price - 1) * 100 if last else None
+    value = (last or holding.entry_price) * holding.quantity
+    # The recorded amount, not price x quantity. The share count is derived from the cash, so
+    # multiplying back gives 20.35 for a 20.36 purchase -- the stored figure is the fact.
+    cost = (
+        holding.entry_amount
+        if holding.entry_amount is not None and holding.entry_amount_currency == "USD"
+        else holding.entry_price * holding.quantity
+    )
+
+    def distance(level: float | None) -> str:
+        if not level or not last:
+            return '<span class="null">n/a</span>'
+        return f"{(level / last - 1) * 100:+.1f}%"
+
+    state: str
+    if outcome is None or not outcome.usable:
+        # On the day you buy there is no session bar yet, which is normal and temporary. Any
+        # other reason means the position genuinely is not being watched, and the two must not
+        # read the same.
+        problem = (outcome.problem if outcome else "").lower()
+        if "nothing to evaluate" in problem:
+            state = (
+                '<span class="tag">the exit rule starts tomorrow &mdash; today&rsquo;s bar '
+                "does not exist yet</span>"
+            )
+        else:
+            state = (
+                '<span class="tag thin">NOT being watched: '
+                f'{_esc(outcome.problem if outcome else "never checked")}</span>'
+            )
+    elif outcome.exit_triggered:
+        ago = outcome.sessions_since_trigger or 0
+        when = "today" if ago == 0 else f"{outcome.exit_triggered_on}, {ago} sessions ago"
+        state = (
+            f'<span class="tag sell">{_esc(outcome.exit_reason)} &mdash; {when}</span>'
+        )
+    else:
+        state = '<span class="tag buy">within the rules</span>'
+
+    rows = [
+        ("You paid", f"{holding.entry_price:,.2f}"),
+        ("Shares", f"{holding.quantity:.6f}"),
+        ("Put in", f"{cost:,.2f} USD"),
+        ("Worth now", f"{value:,.2f} USD" if last else "n/a"),
+        ("Target", f"{holding.take_profit_price:,.2f}" if holding.take_profit_price else "none"),
+        ("...from here", distance(holding.take_profit_price)),
+        ("Stop", f"{holding.stop_price:,.2f}" if holding.stop_price else "none"),
+        ("...from here", distance(holding.stop_price)),
+    ]
+    cells = "".join(f"<div><dt>{k}</dt><dd>{v}</dd></div>" for k, v in rows)
+
+    warnings = []
+    if holding.stop_price is None:
+        warnings.append(
+            "<b>No stop is recorded</b>, so only a trend break can close this and nothing "
+            "defines where the risk ends. Fix it with "
+            "<code>python -m app set-levels " + _esc(holding.symbol) + "</code>."
+        )
+    if holding.entry_price_estimated:
+        warnings.append(
+            "The entry price was assumed from a closing price, not reported, so every figure "
+            "here is approximate."
+        )
+    if outcome is not None and outcome.liquidity_caveat:
+        warnings.append(_esc(outcome.liquidity_caveat))
+    warning_html = "".join(f'<p class="warn-inline">{w}</p>' for w in warnings)
+
+    return f"""
+<div class="position">
+  <div class="phead">
+    <h3>{_esc(holding.symbol)}</h3>
+    <span class="pnl {'up' if (pnl_pct or 0) >= 0 else 'down'}">
+      {_pct(pnl_pct)}
+    </span>
+    {state}
+  </div>
+  <p class="sub">{_esc(holding.region)} &middot; held since {entry_date}
+  &middot; via {_esc(holding.broker) or 'your broker'}</p>
+  {chart}
+  <dl class="pstats">{cells}</dl>
+  {warning_html}
+</div>
+"""
+
+
+def _holdings_section(holdings: dict[str, Any], history: dict[str, Any]) -> str:
     """Rendered only when explicitly requested. See the module docstring on privacy."""
     rows = holdings["rows"]
     watch = {o.holding_id: o for o in holdings["watch"]}
     if not rows:
         return '<h2>Your positions</h2><p class="sub">None recorded.</p>'
 
-    cells = []
-    for holding in rows:
-        outcome = watch.get(holding.id)
-        if holding.closed_on is not None:
-            state = f"closed {holding.closed_on.date()}"
-            pnl = _pct(holding.pnl_pct)
-        elif outcome is None or not outcome.usable:
-            state = '<span class="tag thin">not checkable</span>'
-            pnl = '<span class="null">n/a</span>'
-        elif outcome.exit_triggered:
-            ago = outcome.sessions_since_trigger or 0
-            when = "today" if ago == 0 else f"{outcome.exit_triggered_on} ({ago} back)"
-            state = f'<span class="tag sell">exit rule fired {when}</span>'
-            pnl = _pct(outcome.unrealised_pnl_pct)
-        else:
-            state = '<span class="tag">holding</span>'
-            pnl = _pct(outcome.unrealised_pnl_pct)
-        cells.append(
+    open_rows = [h for h in rows if h.closed_on is None]
+    closed_rows = [h for h in rows if h.closed_on is not None]
+
+    blocks = "".join(
+        _position_block(h, watch.get(h.id), history) for h in open_rows
+    )
+
+    closed_html = ""
+    if closed_rows:
+        closed_cells = "".join(
             "<tr>"
-            f"<td>{_esc(holding.symbol)}</td>"
-            f"<td>{_esc(holding.region)}</td>"
-            f"<td>{holding.quantity:g}</td>"
-            f"<td>{holding.entry_price:g}</td>"
-            f"<td>{_esc(holding.opened_on.date())}</td>"
-            f"<td>{pnl}</td>"
-            f"<td>{state}</td>"
+            f"<td>{_esc(h.symbol)}</td>"
+            f"<td>{_esc(h.opened_on.date())} &rarr; {_esc(h.closed_on.date())}</td>"
+            f"<td>{h.entry_price:,.2f}</td>"
+            f"<td>{h.exit_price:,.2f}</td>"
+            f"<td>{_pct(h.pnl_pct)}</td>"
+            f"<td>{h.holding_period_days} days</td>"
             "</tr>"
+            for h in closed_rows
         )
+        closed_html = f"""
+<h3>Closed</h3>
+<table><thead><tr>
+<th>Symbol</th><th>Held</th><th>In</th><th>Out</th><th>Result</th><th>For</th>
+</tr></thead><tbody>{closed_cells}</tbody></table>"""
 
     return f"""
 <h2>Your positions</h2>
 <div class="priv"><strong>This section contains personal position data.</strong> It was included
 because <code>--include-holdings</code> was passed. Do not publish this file anywhere public: a
-GitHub Pages site on a free plan is served from a public repository and this table would be
+GitHub Pages site on a free plan is served from a public repository and this would be
 world-readable.</div>
-<table><thead><tr>
-<th>Symbol</th><th>Region</th><th>Qty</th><th>Entry</th><th>Since</th><th>P&amp;L</th><th></th>
-</tr></thead><tbody>{''.join(cells)}</tbody></table>
+{blocks}
+{_exit_rules_block()}
+{closed_html}
 <p class="sub">{_esc(holdings['realised']['evidence'])}</p>
 """
 
@@ -522,7 +744,9 @@ def render_digest(data: dict[str, Any]) -> str:
         )
 
     holdings_block = (
-        _holdings_section(data["holdings"]) if data.get("holdings") is not None else ""
+        _holdings_section(data["holdings"], data["history"])
+        if data.get("holdings") is not None
+        else ""
     )
 
     return f"""<!doctype html>
@@ -579,6 +803,8 @@ position large enough to matter would move the price.</p>
 market impact at any position size, so on the {sum(e['n_thin'] for e in data['regions'])}
 instruments below {LIQUIDITY_CONCERN_USD / 1_000_000:.0f}M USD a day every modelled fill is
 optimistic by an amount nothing here measures.</p>
+
+<script>{READOUT_SCRIPT}</script>
 
 <footer>
 No part of this system places orders, and live trading is not implemented. Prices come from free

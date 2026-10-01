@@ -72,7 +72,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 903 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 910 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -840,7 +840,7 @@ study. Daily is the priority everywhere in this project.
 
 ```powershell
 .\.venv\Scripts\Activate.ps1
-python -m pytest                          # 903 tests (900 offline, 3 live)
+python -m pytest                          # 910 tests (907 offline, 3 live)
 python -m pytest -m 'not slow'            # skip the minutes-long integration tests
 python -m pytest -m network               # 3 live provider tests
 python -m pytest --cov=backend/app        # with coverage
