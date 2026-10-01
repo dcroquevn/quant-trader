@@ -2580,11 +2580,18 @@ def notify_test() -> None:
         "400": "Usually a wrong chat id, or you never messaged the bot. Send your bot any "
         "message, then get the id from @userinfobot.",
         "403": "The bot is blocked, or it has never been messaged from that chat.",
+        # Checked before the generic 403 below, because the two call for opposite fixes.
+        "can't send messages to the bot": (
+            "The chat id belongs to a BOT, not to you. Telegram forbids one bot messaging "
+            "another. You need your own account's numeric id: message @userinfobot and use "
+            "the number it replies with -- the one where is_bot is false."
+        ),
         "404": "The token does not identify a bot. Check that no angle brackets or spaces "
         "were pasted with it.",
     }
-    for code, hint in hints.items():
-        if f"HTTP {code}" in result.detail:
+    # Longest key first, so a specific description beats the bare status code that contains it.
+    for code, hint in sorted(hints.items(), key=lambda kv: -len(kv[0])):
+        if code in result.detail or f"HTTP {code}" in result.detail:
             console.print(f"[yellow]{hint}[/yellow]")
             break
     raise typer.Exit(code=1)

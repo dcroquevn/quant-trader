@@ -372,3 +372,41 @@ class TestLevelsWithoutASignal:
             )
             is None
         )
+
+
+class TestTelegramDiagnostics:
+    """Which fix the error points you at.
+
+    Both failures below are HTTP 403, and they call for opposite actions: one means unblock the
+    bot, the other means the chat id is a bot's and has to be replaced with your own. A real run
+    hit the second and was told the first.
+    """
+
+    def test_the_specific_description_wins_over_the_bare_status(self) -> None:
+        """Dict order must not decide which advice the user gets."""
+        hints = {
+            "403": "generic",
+            "can't send messages to the bot": "specific",
+        }
+        detail = "HTTP 403: {\"description\":\"Forbidden: the bot can't send messages to the bot\"}"
+
+        chosen = None
+        for code, hint in sorted(hints.items(), key=lambda kv: -len(kv[0])):
+            if code in detail or f"HTTP {code}" in detail:
+                chosen = hint
+                break
+        assert chosen == "specific"
+
+    def test_a_plain_403_still_gets_the_generic_advice(self) -> None:
+        hints = {
+            "403": "generic",
+            "can't send messages to the bot": "specific",
+        }
+        detail = 'HTTP 403: {"description":"Forbidden: bot was blocked by the user"}'
+
+        chosen = None
+        for code, hint in sorted(hints.items(), key=lambda kv: -len(kv[0])):
+            if code in detail or f"HTTP {code}" in detail:
+                chosen = hint
+                break
+        assert chosen == "generic"

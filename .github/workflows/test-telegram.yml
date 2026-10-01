@@ -77,8 +77,12 @@ jobs:
         run: |
           set +e
           python -m app notify-test 2>&1 | tee /tmp/notify.log
-          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
-          exit ${PIPESTATUS[0]}
+          # Captured immediately: PIPESTATUS is rewritten by the next command, so reading it
+          # after the echo below reported that echo's status and the job passed while the log
+          # said "Not delivered".
+          STATUS=${PIPESTATUS[0]}
+          echo "exit=$STATUS" >> "$GITHUB_OUTPUT"
+          exit $STATUS
 
       - name: Explain the result
         if: always()
@@ -106,6 +110,7 @@ jobs:
               echo "| \`HTTP 404\` | The token does not identify a bot — often angle brackets or a space pasted with it. |"
               echo "| \`HTTP 401\` | The token is wrong or was revoked. Copy it again from @BotFather. |"
               echo "| \`HTTP 400\` | Usually a wrong chat id. Get it from @userinfobot. |"
-              echo "| \`HTTP 403\` | The bot is blocked, or you have never messaged it. |"
+              echo "| \`HTTP 403\` + *can't send messages to the bot* | The chat id belongs to a **bot**, not to you. Telegram forbids bot-to-bot messages. You need your own account's numeric id. |"
+              echo "| \`HTTP 403\` otherwise | The bot is blocked, or you have never messaged it. |"
             fi
           } >> "$GITHUB_STEP_SUMMARY"
