@@ -2401,6 +2401,89 @@ def _write_step_summary(report) -> None:
         handle.write("\n".join(lines) + "\n")
 
 
+
+@app.command("notify-test")
+def notify_test() -> None:
+    """Send one test message and report exactly what happened.
+
+    Nothing else runs: no download, no strategy, no database. If the message does not arrive,
+    the cause is in the notification path and nowhere else.
+    """
+    from datetime import datetime, timezone
+
+    from app.notifications.base import Notification, build_notifier
+    from app.notifications.telegram import TelegramNotifier
+
+    setup_logging()
+    settings = get_settings()
+
+    # Report the configuration before touching the network: a missing secret is the usual
+    # cause and needs no round trip to diagnose.
+    token, chat = settings.telegram_bot_token, settings.telegram_chat_id
+    table = Table(title="Telegram configuration", header_style="bold cyan")
+    table.add_column("setting")
+    table.add_column("value")
+    table.add_row(
+        "TELEGRAM_BOT_TOKEN",
+        # Never the whole token, even in a terminal: this output gets pasted into chats.
+        f"[green]set, {len(token)} chars, ends ...{token[-4:]}[/green]"
+        if token
+        else "[red]missing[/red]",
+    )
+    table.add_row(
+        "TELEGRAM_CHAT_ID", f"[green]{chat}[/green]" if chat else "[red]missing[/red]"
+    )
+    table.add_row(
+        "TELEGRAM_ENABLED",
+        "[green]true[/green]" if settings.telegram_enabled else "[yellow]false[/yellow]",
+    )
+    console.print(table)
+
+    notifier = TelegramNotifier()
+    if not notifier.configured:
+        console.print(f"[red]{notifier.describe_setup()}[/red]")
+        raise typer.Exit(code=1)
+
+    stamp = datetime.now(timezone.utc)
+    result = notifier.send(
+        Notification(
+            kind="test",
+            subject="[quant-trader] Telegram is working",
+            body=(
+                f"Sent {stamp:%Y-%m-%d %H:%M} UTC.\n\n"
+                "If you are reading this on your phone, the daily check can reach you. "
+                "From now on you will get:\n"
+                "  - a market digest each weekday, with the page attached\n"
+                "  - an alert whenever an exit rule fires on a position you recorded\n\n"
+                "Nothing in this project places orders, and this message is not advice."
+            ),
+            # Keyed to the minute so repeated tests are not suppressed as duplicates, which
+            # would look exactly like a delivery failure.
+            dedupe_key=f"test:{stamp:%Y-%m-%dT%H:%M}",
+        )
+    )
+
+    if result.delivered:
+        console.print(
+            f"[green]Delivered.[/green] {result.detail} -- check your phone."
+        )
+        return
+
+    console.print(f"[red]Not delivered:[/red] {result.detail}")
+    hints = {
+        "401": "The token is wrong or was revoked. Copy it again from @BotFather.",
+        "400": "Usually a wrong chat id, or you never messaged the bot. Send your bot any "
+        "message, then get the id from @userinfobot.",
+        "403": "The bot is blocked, or it has never been messaged from that chat.",
+        "404": "The token does not identify a bot. Check that no angle brackets or spaces "
+        "were pasted with it.",
+    }
+    for code, hint in hints.items():
+        if f"HTTP {code}" in result.detail:
+            console.print(f"[yellow]{hint}[/yellow]")
+            break
+    raise typer.Exit(code=1)
+
 @app.command("alerts")
 def show_alerts(limit: int = typer.Option(20, "--limit", "-n")) -> None:
     """Every alert this system tried to send, and whether it arrived.

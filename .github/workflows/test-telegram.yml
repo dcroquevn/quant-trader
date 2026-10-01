@@ -1,0 +1,67 @@
+# Send one test message, so a failure has exactly one possible cause.
+#
+# The daily job also proves Telegram works, but it downloads ten years of bars, runs the
+# strategy and builds a digest on the way. If nothing arrives, the user is left guessing which
+# of those broke. This one installs and sends -- still a couple of minutes, since the install
+# is the same, but there is only one thing that can have failed.
+#
+# It prints whether each secret is present before it tries the network, because a missing secret
+# is the common case and needs no round trip to diagnose. The token is never echoed in full: the
+# summary gets pasted into chats.
+
+name: Test Telegram
+
+on:
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      # The full set, despite only the notifier being exercised: app/__main__.py imports
+      # sqlalchemy and the data layer at module load, so a trimmed install cannot even reach
+      # the command. Trimming it would need the CLI to defer those imports, which is a real
+      # change and not one worth making for a diagnostic.
+      - name: Install
+        run: pip install -r requirements.txt
+
+      - name: Send
+        env:
+          PYTHONPATH: backend
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_ENABLED: 'true'
+          PAPER_TRADING: 'true'
+          LIVE_TRADING: 'false'
+        run: python -m app notify-test
+
+      - name: Explain the result
+        if: always()
+        run: |
+          {
+            echo "## Telegram check"
+            echo
+            if [ "${{ job.status }}" = "success" ]; then
+              echo "Delivered. Look at your phone — if the message is there, the daily run can"
+              echo "reach you, and you need do nothing else."
+            else
+              echo ":warning: **Not delivered.** The step above says why. The usual causes:"
+              echo
+              echo "| Error | Cause |"
+              echo "|---|---|"
+              echo "| \`missing\` | The secret is not set, or its name is misspelled. It must be exactly \`TELEGRAM_BOT_TOKEN\` and \`TELEGRAM_CHAT_ID\`. |"
+              echo "| \`HTTP 404\` | The token does not identify a bot — often angle brackets or a space pasted with it. |"
+              echo "| \`HTTP 401\` | The token is wrong or was revoked. Copy it again from @BotFather. |"
+              echo "| \`HTTP 400\` | Usually a wrong chat id. Get it from @userinfobot. |"
+              echo "| \`HTTP 403\` | The bot is blocked, or you have never messaged it. |"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
