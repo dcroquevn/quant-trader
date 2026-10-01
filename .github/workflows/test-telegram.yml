@@ -34,7 +34,37 @@ jobs:
       - name: Install
         run: pip install -r requirements.txt
 
+      # Whether each secret arrived at all, before any network call. GitHub masks their
+      # values in logs, so length and last characters are the most that can be shown -- and
+      # they are enough to catch the usual faults: an empty secret, a misspelled name, a
+      # trailing space or a pasted quote.
+      - name: What the secrets look like
+        env:
+          TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHAT: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          {
+            echo "## What arrived from the secrets"
+            echo
+            echo "| Secret | Present | Length | Looks like |"
+            echo "|---|---|---:|---|"
+            if [ -z "$TOKEN" ]; then
+              echo "| TELEGRAM_BOT_TOKEN | **NO** | 0 | not set, or the name is misspelled |"
+            else
+              echo "| TELEGRAM_BOT_TOKEN | yes | ${#TOKEN} | ends \`...${TOKEN: -4}\` |"
+            fi
+            if [ -z "$CHAT" ]; then
+              echo "| TELEGRAM_CHAT_ID | **NO** | 0 | not set, or the name is misspelled |"
+            else
+              echo "| TELEGRAM_CHAT_ID | yes | ${#CHAT} | \`$CHAT\` |"
+            fi
+            echo
+            echo "A token from BotFather is normally 45-46 characters and contains a colon."
+            echo "A chat id is normally 9-10 digits, sometimes with a leading minus."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Send
+        id: send
         env:
           PYTHONPATH: backend
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -42,7 +72,13 @@ jobs:
           TELEGRAM_ENABLED: 'true'
           PAPER_TRADING: 'true'
           LIVE_TRADING: 'false'
-        run: python -m app notify-test
+        # Captured so the summary can show it. Something already is not working; sending the
+        # user to a second place to read the reason is not help.
+        run: |
+          set +e
+          python -m app notify-test 2>&1 | tee /tmp/notify.log
+          echo "exit=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+          exit ${PIPESTATUS[0]}
 
       - name: Explain the result
         if: always()
@@ -50,6 +86,14 @@ jobs:
           {
             echo "## Telegram check"
             echo
+            if [ -f /tmp/notify.log ]; then
+              echo "### What the check printed"
+              echo
+              echo '```'
+              cat /tmp/notify.log
+              echo '```'
+              echo
+            fi
             if [ "${{ job.status }}" = "success" ]; then
               echo "Delivered. Look at your phone — if the message is there, the daily run can"
               echo "reach you, and you need do nothing else."

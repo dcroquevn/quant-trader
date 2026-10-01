@@ -2444,6 +2444,20 @@ def notify_test() -> None:
         console.print(f"[red]{notifier.describe_setup()}[/red]")
         raise typer.Exit(code=1)
 
+    # Check the token by itself first. A failed send cannot tell a bad token from a bad chat id,
+    # and sending the user to re-copy a token that was never wrong wastes the one thing a
+    # diagnostic is for.
+    token_ok, token_detail = notifier.verify_token()
+    if token_ok:
+        console.print(f"[green]Token is valid[/green] -- the bot is {token_detail}.")
+    else:
+        console.print(f"[red]The token itself is rejected:[/red] {token_detail}")
+        console.print(
+            "[yellow]Fix the token before looking at anything else.[/yellow] The chat id has "
+            "not been tested, because a bad token makes every call fail the same way."
+        )
+        raise typer.Exit(code=1)
+
     stamp = datetime.now(timezone.utc)
     result = notifier.send(
         Notification(
@@ -2470,6 +2484,10 @@ def notify_test() -> None:
         return
 
     console.print(f"[red]Not delivered:[/red] {result.detail}")
+    console.print(
+        "[yellow]The token is valid, so this is about the destination.[/yellow] The chat id "
+        f"being used is {chat!r}."
+    )
     hints = {
         "401": "The token is wrong or was revoked. Copy it again from @BotFather.",
         "400": "Usually a wrong chat id, or you never messaged the bot. Send your bot any "

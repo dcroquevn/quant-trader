@@ -239,3 +239,38 @@ class TelegramNotifier(Notifier):
         return NotificationResult.sent(
             self.name, f"document {name} ({len(payload):,} bytes)"
         )
+
+    def verify_token(self) -> tuple[bool, str]:
+        """Ask Telegram who this bot is. Returns ``(ok, detail)``.
+
+        Separates the two failures that look identical from a failed send: a bad token and a bad
+        chat id. ``getMe`` needs only the token, so if it succeeds the token is good and anything
+        still failing is about the destination. Without this split, "not delivered" sends the
+        user to re-copy a token that was never the problem.
+        """
+        if not self._token:
+            return False, "TELEGRAM_BOT_TOKEN is empty."
+
+        request = urllib.request.Request(f"{TELEGRAM_API_BASE}/bot{self._token}/getMe")
+        try:
+            with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT_SECONDS) as response:
+                body = json.loads(response.read().decode("utf-8"))
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", errors="replace")[:200]
+            if exc.code == 404:
+                return False, (
+                    "HTTP 404: no bot has this token. Almost always a stray character pasted "
+                    "with it -- angle brackets, a quote, or a trailing space."
+                )
+            if exc.code == 401:
+                return False, "HTTP 401: the token is wrong or was revoked."
+            return False, f"HTTP {exc.code}: {detail}"
+        except (urllib.error.URLError, TimeoutError, OSError) as exc:
+            return False, f"could not reach Telegram: {exc}"
+        except json.JSONDecodeError as exc:
+            return False, f"unparseable response: {exc}"
+
+        if not body.get("ok"):
+            return False, str(body.get("description", body))
+        bot = body.get("result", {})
+        return True, f"@{bot.get('username', '?')} ({bot.get('first_name', '?')})"
