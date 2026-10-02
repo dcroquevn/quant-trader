@@ -104,8 +104,10 @@ class TestPayloadCarriesNothingPersonal:
         payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
         instrument = payload["instruments"]["GOOGL"]
         assert set(instrument) == {
-            "name", "region", "sector", "etf", "turnover", "thin", "liquidity_caveat",
-            "notes", "signal", "score", "reasons", "d", "h", "l", "c", "e", "a",
+            "conditions", "levels", "ema200", "rsi", "macd_hist", "rel_volume", "atr_pct",
+            "from_high", "name", "region", "sector", "etf", "turnover", "thin",
+            "liquidity_caveat", "notes", "signal", "score", "reasons",
+            "d", "h", "l", "c", "e", "a",
         }
 
 
@@ -171,8 +173,13 @@ global.FileReader = function () {{}};
 MKT = JSON.parse(require("fs").readFileSync({json.dumps(str(built / "market.json"))}, "utf8"));
 {script}
 """
+        # Written to a file rather than passed with `node -e`: the page's JavaScript is past
+        # 35 KB and Windows caps a command line at about 32 KB, so -e started failing with
+        # "el nombre del archivo o la extension es demasiado largo" as the app grew.
+        script_file = built.parent / "_harness.js"
+        script_file.write_text(harness, encoding="utf-8")
         result = subprocess.run(
-            [NODE, "-e", harness], capture_output=True, text=True, timeout=60
+            [NODE, str(script_file)], capture_output=True, text=True, timeout=60
         )
         assert result.returncode == 0, result.stderr[-2000:]
         return json.loads(result.stdout.strip().splitlines()[-1])

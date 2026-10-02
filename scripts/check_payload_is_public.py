@@ -40,6 +40,14 @@ TOP_LEVEL = {
 }
 
 PER_INSTRUMENT = {
+    "conditions",
+    "levels",
+    "ema200",
+    "rsi",
+    "macd_hist",
+    "rel_volume",
+    "atr_pct",
+    "from_high",
     "name",
     "region",
     "sector",

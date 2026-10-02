@@ -144,7 +144,44 @@ def build_market_payload(
             continue
         series = _series(frame, HISTORY_SESSIONS)
         reading = readings.get(spec.symbol)
+
+        # Evaluated again rather than taken from the scan row, which keeps only the failing
+        # reasons. The app needs every condition with its measured value: "which one is
+        # stopping this?" is the question a score of 0.71 raises and cannot answer.
+        decision = strategy.evaluate(frame, in_position=False)
+        conditions = [
+            {"name": c.name, "ok": bool(c.passed), "detail": c.detail}
+            for c in decision.components
+        ]
+
+        # What it would propose if entered today. Available regardless of the signal, because a
+        # stop is a volatility measurement and not part of the entry decision.
+        proposed = strategy.propose_levels(frame)
+        last_close = float(frame["close"].iloc[-1])
+        levels = None
+        if proposed and last_close > proposed[0]:
+            stop, target = proposed
+            levels = {
+                "stop": round(stop, 4),
+                "target": round(target, 4),
+                "rr": round((target - last_close) / (last_close - stop), 2),
+            }
+
+        def feature(name: str) -> float | None:
+            if name not in frame.columns:
+                return None
+            value = frame[name].iloc[-1]
+            return None if value != value else round(float(value), 4)
+
         instruments[spec.symbol] = {
+            "conditions": conditions,
+            "levels": levels,
+            "ema200": feature("ema_200"),
+            "rsi": feature("rsi_14"),
+            "macd_hist": feature("macd_hist"),
+            "rel_volume": feature("relative_volume_20"),
+            "atr_pct": feature("atr_pct_14"),
+            "from_high": feature("dist_52w_high_pct"),
             "name": spec.name,
             "region": spec.region,
             "sector": spec.sector,

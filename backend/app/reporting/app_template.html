@@ -105,6 +105,8 @@ svg{display:block;width:100%;height:auto;overflow:visible}
   text-align:center;min-height:18px}
 .lbl{font-size:9.5px;fill:var(--dim);font-family:ui-monospace,Menlo,monospace}
 .lbl2{font-size:8.5px;fill:var(--faint);font-family:ui-monospace,Menlo,monospace}
+/* The detail chart's viewBox is wider, so the same font units render smaller. */
+.wide .lbl{font-size:12px} .wide .lbl2{font-size:11px}
 
 /* ---- the add/edit form ---- */
 .field{margin:0 0 12px}
@@ -136,6 +138,36 @@ input:focus,select:focus{outline:none;border-color:var(--accent)}
 footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
   font-size:11.5px;color:var(--faint);line-height:1.6}
 .hidden{display:none !important}
+.row2{display:flex;justify-content:space-between;align-items:center;gap:10px;
+  padding:11px 2px;border-bottom:1px solid var(--line);font-size:14px;width:100%;
+  background:none;border-left:0;border-right:0;border-top:0;color:var(--text);text-align:left}
+.row2:last-child{border-bottom:0}
+.row2:active{background:var(--raised)}
+.row2 .sym{font-weight:600;min-width:62px;display:inline-block}
+.row2 .meta{font-size:11.5px;color:var(--faint);display:block;margin-top:2px;font-weight:400}
+.pill{font-size:10px;padding:2px 7px;border-radius:999px;border:1px solid var(--line2);
+  color:var(--dim);white-space:nowrap}
+.pill.buy{color:var(--pos);border-color:rgba(38,217,138,.45);background:rgba(38,217,138,.08)}
+.pill.sell{color:var(--neg);border-color:rgba(255,92,124,.45)}
+.pill.thin{color:var(--warn);border-color:rgba(255,184,77,.4)}
+.score{font-variant-numeric:tabular-nums;font-size:12.5px;color:var(--dim);min-width:34px;
+  text-align:right;display:inline-block}
+.cond{display:flex;gap:10px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}
+.cond:last-child{border-bottom:0}
+.cond .mark{width:17px;flex:0 0 17px;font-weight:700}
+.cond .mark.ok{color:var(--pos)} .cond .mark.no{color:var(--neg)}
+.cond .txt{color:#b8c0d0}
+.cond.failing .txt{color:var(--text)}
+.rets{width:100%;font-size:13px}
+.rets th{text-align:right;font-size:10.5px;color:var(--dim);text-transform:uppercase;
+  letter-spacing:.04em;padding:0 6px 7px;font-weight:600}
+.rets th:first-child{text-align:left}
+.rets td{text-align:right;padding:7px 6px;border-top:1px solid var(--line);
+  font-variant-numeric:tabular-nums}
+.rets td:first-child{text-align:left;color:var(--dim)}
+.chev{color:var(--faint);font-size:17px;line-height:1}
+.lnk{background:none;border:0;padding:0;color:var(--accent);font:inherit;cursor:pointer;
+  text-decoration:underline;text-underline-offset:2px}
 </style>
 </head>
 <body>
@@ -228,10 +260,18 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
   <!-- ============================= MARKET ============================== -->
   <section id="view-market" class="hidden">
     <div class="card">
-      <h2 style="margin-top:0">Signals today</h2>
+      <h2 style="margin-top:0">Entry conditions today</h2>
       <div id="signals"></div>
     </div>
+    <p class="sub">Ranked by how many of the seven entry conditions hold. Tap any instrument
+    for its chart, which conditions are failing, and how it has done.</p>
     <div id="regions"></div>
+  </section>
+
+  <!-- ============================= DETAIL =============================== -->
+  <section id="view-detail" class="hidden">
+    <button class="btn small" id="d-back" style="margin-bottom:14px">&larr; Back</button>
+    <div id="detail"></div>
   </section>
 
   <!-- ============================== LEARN ============================== -->
@@ -423,7 +463,16 @@ function fmt(n, d) {
 }
 function pct(n) {
   if (n == null || isNaN(n)) return "n/a";
-  return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+  // Locale-formatted like fmt(), or the same table shows 338,24 next to +1.03%.
+  return (n > 0 ? "+" : "") + fmt(n) + "%";
+}
+function big(n) {
+  if (n == null || isNaN(n)) return "n/a";
+  var units = [[1e9, " billion"], [1e6, " million"], [1e3, " thousand"]];
+  for (var i = 0; i < units.length; i++) {
+    if (n >= units[i][0]) return fmt(n / units[i][0], 1) + units[i][1];
+  }
+  return fmt(n, 0);
 }
 function esc(s) {
   return String(s).replace(/[&<>"]/g, function (c) {
@@ -542,7 +591,7 @@ function rulesTable(pos, ev) {
     var crossed = dir === "below" ? last <= level : last >= level;
     return crossed
       ? '<span class="met">already</span>'
-      : '<span class="tnum">' + (move > 0 ? "+" : "") + move.toFixed(1) + "%</span>";
+      : '<span class="tnum">' + (move > 0 ? "+" : "") + fmt(move, 1) + "%</span>";
   }
 
   rows.push(['<span class="dot stop"></span>Stop', fmt(ev.levels.stop),
@@ -588,10 +637,11 @@ function renderPositions() {
         : "") + " · since " + esc(pos.date) + "</div>" +
       '<div class="verdict"><span class="badge ' + cls + '">' + ev.verdict + "</span>" +
       '<span class="why">' + esc(ev.why || "") + "</span></div>" +
+      strategyLine(pos.symbol) +
       chart(pos, ev) +
       '<div class="stats">' +
         stat("You paid", fmt(pos.price)) +
-        stat("Shares", pos.shares.toFixed(6)) +
+        stat("Shares", fmt(pos.shares, 6)) +
         stat("Put in", fmt(pos.amount) + " " + pos.currency) +
         stat("Worth now", ev.value != null ? fmt(ev.value) + " USD" : "n/a") +
       "</div>" +
@@ -610,6 +660,10 @@ function renderPositions() {
       '">Remove</button></div></div>';
   }).join("");
 
+  host.querySelectorAll("[data-sym]").forEach(function (b) {
+    b.addEventListener("click", function () { showDetail(b.dataset.sym); });
+  });
+
   host.querySelectorAll("[data-del]").forEach(function (b) {
     b.addEventListener("click", function () {
       if (!confirm("Remove this position? It is only stored here.")) return;
@@ -618,6 +672,22 @@ function renderPositions() {
     });
   });
   wireCharts(host);
+}
+
+function strategyLine(symbol) {
+  // One strategy, the same one everywhere. Saying so beats letting a reader assume each
+  // instrument got a hand-picked method -- none did, and the uniformity is the point: a rule
+  // that has to be tuned per symbol has been fitted to that symbol's past.
+  var s = MKT.strategy;
+  return '<p class="sub" style="margin:10px 0 0">Strategy <b>' + esc(s.name) +
+    "</b> &mdash; the same rules on all " + Object.keys(MKT.instruments).length +
+    " instruments. Exit on a close under the 50-day average" +
+    (s.exit_rsi_max ? ", on RSI above " + s.exit_rsi_max : "") +
+    ", at the stop " + s.stop_atr_multiple + " ATR below entry, at the target " +
+    s.take_profit_r_multiple + "x that risk, or after " + s.max_holding_bars +
+    " sessions &mdash; whichever comes first. " +
+    '<button class="lnk" data-sym="' + esc(symbol) + '">See ' + esc(symbol) +
+    " in detail &rsaquo;</button></p>";
 }
 
 function stat(k, v) {
@@ -661,39 +731,237 @@ function wireCharts(host) {
   });
 }
 
+function returnsOver(series, windows) {
+  // Computed here rather than downloaded: a number the page can derive from data it already
+  // has is a number it should not make someone wait for.
+  var n = series.length - 1, out = {};
+  Object.keys(windows).forEach(function (label) {
+    var back = n - windows[label];
+    out[label] = back >= 0 ? (series[n] / series[back] - 1) * 100 : null;
+  });
+  return out;
+}
+
+var WINDOWS = {"1w": 5, "1m": 21, "3m": 63, "6m": 126, "1y": 252};
+
+function benchmarkOf(symbol) {
+  for (var i = 0; i < MKT.regions.length; i++) {
+    if (MKT.regions[i].symbols.indexOf(symbol) !== -1) return MKT.regions[i].benchmark;
+  }
+  return null;
+}
+
+function failingCount(inst) {
+  return (inst.conditions || []).filter(function (c) { return !c.ok; }).length;
+}
+
+function marketRow(symbol) {
+  var inst = MKT.instruments[symbol];
+  var r = returnsOver(inst.c, WINDOWS);
+  var missing = failingCount(inst);
+  var pill = inst.signal === "BUY"
+    ? '<span class="pill buy">BUY</span>'
+    : inst.signal === "SELL"
+      ? '<span class="pill sell">exit conditions</span>'
+      : '<span class="pill">' + missing + " to go</span>";
+
+  return '<button class="row2" data-sym="' + symbol + '">' +
+    '<span><span class="sym">' + esc(symbol) + "</span>" + pill +
+    '<span class="meta">' + esc(inst.name) +
+    (inst.thin ? " \u00b7 thinly traded" : "") + "</span></span>" +
+    '<span class="' + (r["1m"] >= 0 ? "up" : "down") + ' tnum" ' +
+      'style="text-align:right">' + pct(r["1m"]) + "</span>" +
+    '<span class="chev">\u203a</span></button>';
+}
+
 function renderMarket() {
-  var sig = [];
-  Object.keys(MKT.instruments).forEach(function (sym) {
-    var inst = MKT.instruments[sym];
-    if (inst.signal === "BUY" || inst.signal === "SELL") sig.push([sym, inst]);
+  var buys = [], sells = [];
+  Object.keys(MKT.instruments).forEach(function (s) {
+    if (MKT.instruments[s].signal === "BUY") buys.push(s);
+    else if (MKT.instruments[s].signal === "SELL") sells.push(s);
   });
 
-  document.getElementById("signals").innerHTML = sig.length
-    ? sig.map(function (p) {
-        return '<div class="sig"><span><b>' + esc(p[0]) + "</b> " +
-          '<span class="tag ' + (p[1].signal === "BUY" ? "buy" : "") + '">' + p[1].signal +
-          "</span></span><span class=\"tnum\">" + fmt(p[1].c[p[1].c.length - 1]) + "</span></div>";
-      }).join("") +
-      '<p class="sub" style="margin-top:12px">A BUY means the entry conditions hold on ' +
-      "historical data. It is not a probability of profit and not a forecast.</p>"
-    : '<p class="sub" style="margin:0">Nothing fired today. That is the normal case — the ' +
-      "2016–2021 backtest averaged about 13 entries a month across all 42 instruments.</p>";
+  var head = "";
+  if (buys.length) {
+    head = '<p class="sub" style="margin-top:0"><b>' + buys.length +
+      " instrument(s) meet all seven entry conditions today.</b> That means the conditions " +
+      "hold on historical data. It is not a probability of profit, not a forecast, and not " +
+      "advice &mdash; across 915 backtest trades the target was reached 21% of the time.</p>" +
+      buys.map(marketRow).join("");
+  } else {
+    head = '<p class="sub" style="margin:0">Nothing meets all seven conditions today. That is ' +
+      "the normal case: the 2016&ndash;2021 backtest averaged about 13 entries a month across " +
+      "all 42 instruments. The closest are listed below, with what each is still missing.</p>";
+  }
+  if (sells.length) {
+    head += '<p class="sub" style="margin-top:14px"><b>' + sells.length +
+      " meet an exit condition.</b> That only matters for one you hold.</p>" +
+      sells.map(marketRow).join("");
+  }
+  document.getElementById("signals").innerHTML = head;
 
   document.getElementById("regions").innerHTML = MKT.regions.map(function (r) {
-    var shown = r.symbols.length, declared = r.declared;
-    var rows = r.symbols.map(function (s) {
-      var inst = MKT.instruments[s];
-      var c = inst.c, n = c.length - 1;
-      var back = Math.max(0, n - 20);
-      var ret = ((c[n] / c[back]) - 1) * 100;
-      return '<div class="sig"><span>' + esc(s) +
-        (inst.thin ? ' <span class="tag">thin</span>' : "") +
-        '</span><span class="tnum ' + (ret >= 0 ? "up" : "down") + '">' + pct(ret) + "</span></div>";
-    }).join("");
+    // Ranked by score: the only ordering anyone scans a list like this for is "what is
+    // closest to firing".
+    var sorted = r.symbols.slice().sort(function (a, b) {
+      return (MKT.instruments[b].score || 0) - (MKT.instruments[a].score || 0);
+    });
     return '<div class="card"><h2 style="margin-top:0">' + esc(r.name) + "</h2>" +
-      '<p class="sub">' + (shown === declared ? shown : "<b>" + shown + " of " + declared + "</b>") +
-      " evaluated · benchmark " + esc(r.benchmark) + " · 20-session return</p>" + rows + "</div>";
+      '<p class="sub">' +
+      (r.symbols.length === r.declared
+        ? r.symbols.length + " instruments"
+        : "<b>" + r.symbols.length + " of " + r.declared + "</b> evaluated") +
+      " \u00b7 benchmark " + esc(r.benchmark) +
+      " \u00b7 ranked by conditions met \u00b7 return over 1 month</p>" +
+      sorted.map(marketRow).join("") + "</div>";
   }).join("");
+
+  document.querySelectorAll("[data-sym]").forEach(function (b) {
+    b.addEventListener("click", function () { showDetail(b.dataset.sym); });
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Instrument detail
+ * ------------------------------------------------------------------ */
+function instrumentChart(inst) {
+  var n = inst.d.length, from = Math.max(0, n - 260);
+  var d = inst.d.slice(from), c = inst.c.slice(from), e = inst.e.slice(from);
+  if (d.length < 2) return "";
+
+  var W = 460, H = 210, pl = 6, pr = 44, pt = 10, pb = 18;
+  var pw = W - pl - pr, ph = H - pt - pb;
+  var all = c.filter(function (v) { return v != null; });
+  var lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+  var span = (hi - lo) || 1; lo -= span * 0.06; hi += span * 0.06; span = hi - lo;
+  var Y = function (v) { return pt + ph * (1 - (v - lo) / span); };
+  var X = function (i) { return pl + pw * (i / (d.length - 1)); };
+
+  var ep = [];
+  for (var i = 0; i < e.length; i++) {
+    if (e[i] != null) ep.push(X(i).toFixed(1) + "," + Y(e[i]).toFixed(1));
+  }
+  var cp = [];
+  for (var j = 0; j < c.length; j++) cp.push(X(j).toFixed(1) + "," + Y(c[j]).toFixed(1));
+
+  var up = c[c.length - 1] >= c[0];
+  return '<svg class="wide" viewBox="0 0 ' + W + " " + H +
+    '" role="img" aria-label="' + esc(inst.name) +
+    ' price over a year">' +
+    '<line x1="' + pl + '" y1="' + (H - pb) + '" x2="' + (pl + pw) + '" y2="' + (H - pb) +
+    '" stroke="#2f3a52" stroke-width="1"/>' +
+    (ep.length > 1 ? '<polyline points="' + ep.join(" ") + '" fill="none" stroke="#3987e5" ' +
+      'stroke-width="1.5" stroke-dasharray="2 3" opacity=".85"/>' : "") +
+    '<polyline points="' + cp.join(" ") + '" fill="none" stroke="' +
+    (up ? "#26d98a" : "#ff5c7c") + '" stroke-width="2" stroke-linejoin="round"/>' +
+    '<text x="' + (pl + pw + 5) + '" y="' + (Y(c[c.length - 1]) + 3).toFixed(1) +
+    '" class="lbl">' + fmt(c[c.length - 1], 0) + "</text>" +
+    '<text x="' + pl + '" y="' + (H - 4) + '" class="lbl2">' + d[0] + "</text>" +
+    '<text x="' + (pl + pw) + '" y="' + (H - 4) + '" text-anchor="end" class="lbl2">' +
+    d[d.length - 1] + "</text></svg>" +
+    '<p class="sub" style="text-align:center;margin:6px 0 0">Solid: price. Dashed blue: the ' +
+    "50-day average the trend-break rule watches.</p>";
+}
+
+function showDetail(symbol) {
+  var inst = MKT.instruments[symbol];
+  if (!inst) return;
+
+  var mine = returnsOver(inst.c, WINDOWS);
+  var bsym = benchmarkOf(symbol);
+  var bench = bsym && MKT.instruments[bsym] ? returnsOver(MKT.instruments[bsym].c, WINDOWS) : null;
+  var labels = Object.keys(WINDOWS);
+
+  var retTable = '<table class="rets"><thead><tr><th></th>' +
+    labels.map(function (l) { return "<th>" + l + "</th>"; }).join("") +
+    "</tr></thead><tbody><tr><td>" + esc(symbol) + "</td>" +
+    labels.map(function (l) {
+      return '<td class="' + (mine[l] >= 0 ? "up" : "down") + '">' + pct(mine[l]) + "</td>";
+    }).join("") + "</tr>" +
+    (bench
+      ? "<tr><td>" + esc(bsym) + "</td>" + labels.map(function (l) {
+          return '<td class="' + (bench[l] >= 0 ? "up" : "down") + '">' + pct(bench[l]) + "</td>";
+        }).join("") + "</tr><tr><td>difference</td>" + labels.map(function (l) {
+          var g = (mine[l] == null || bench[l] == null) ? null : mine[l] - bench[l];
+          return '<td class="' + (g >= 0 ? "up" : "down") + '">' + pct(g) + "</td>";
+        }).join("") + "</tr>"
+      : "") + "</tbody></table>";
+
+  var conds = (inst.conditions || []).map(function (c) {
+    return '<div class="cond' + (c.ok ? "" : " failing") + '">' +
+      '<span class="mark ' + (c.ok ? "ok" : "no") + '">' + (c.ok ? "\u2713" : "\u2717") +
+      '</span><span class="txt">' + esc(c.detail) + "</span></div>";
+  }).join("");
+
+  var missing = failingCount(inst);
+  var verdict = inst.signal === "BUY"
+    ? '<span class="pill buy">all seven hold</span>'
+    : '<span class="pill">' + missing + " condition" + (missing === 1 ? "" : "s") + " short</span>";
+
+  var trade = inst.levels
+    ? '<table class="rets"><tbody><tr><td>If entered at the last close</td><td>' +
+      fmt(inst.c[inst.c.length - 1]) + "</td></tr><tr><td>Stop</td><td>" +
+      fmt(inst.levels.stop) + "</td></tr><tr><td>Target</td><td>" + fmt(inst.levels.target) +
+      "</td></tr><tr><td>Reward to risk</td><td>" + fmt(inst.levels.rr) +
+      "x</td></tr></tbody></table>" +
+      '<p class="sub">The stop is two ATR below the close &mdash; a volatility measurement, ' +
+      "not a round number. Pay more than the close and the whole difference comes off that " +
+      "ratio, because the levels do not follow your fill.</p>"
+    : '<p class="sub">No levels could be placed from the stored history.</p>';
+
+  document.getElementById("detail").innerHTML =
+    '<div class="card"><div class="phead"><h3>' + esc(symbol) + "</h3>" +
+      '<span class="tnum ' + (mine["1m"] >= 0 ? "up" : "down") + '" style="font-size:19px">' +
+      pct(mine["1m"]) + ' <span class="sub">1m</span></span></div>' +
+      '<p class="sub">' + esc(inst.name) + " \u00b7 " + esc(inst.region) + " \u00b7 " +
+      esc(inst.sector) + (inst.etf ? " \u00b7 ETF" : "") + "</p>" +
+      '<div class="verdict">' + verdict + '<span class="why">Score ' +
+      (inst.score == null ? "n/a" : fmt(inst.score)) +
+      " &mdash; it counts conditions, not probability.</span></div>" +
+      instrumentChart(inst) + "</div>" +
+
+    '<div class="card"><h2 style="margin-top:0">The seven entry conditions</h2>' + conds +
+      (inst.signal === "BUY"
+        ? '<p class="sub">All seven hold. That is what a BUY means here: the conditions are ' +
+          "true on historical data. It is not a forecast, and nothing on this page says the " +
+          "price will rise.</p>"
+        : '<p class="sub">The crossed ones are what keep this from being an entry today.</p>') +
+    "</div>" +
+
+    '<div class="card"><h2 style="margin-top:0">How it has done</h2>' + retTable +
+      (bench
+        ? '<p class="sub">Against ' + esc(bsym) + ", its region&rsquo;s benchmark &mdash; " +
+          "which is also tradable here, so a strategy can end up holding its own yardstick.</p>"
+        : "") + "</div>" +
+
+    '<div class="card"><h2 style="margin-top:0">The trade it would propose</h2>' + trade +
+    "</div>" +
+
+    '<div class="card"><h2 style="margin-top:0">Worth knowing</h2>' +
+      '<table class="rets"><tbody><tr><td>Traded value a day</td><td>' +
+      (inst.turnover ? big(inst.turnover) + " USD" : "n/a") +
+      "</td></tr><tr><td>RSI</td><td>" + fmt(inst.rsi, 1) +
+      "</td></tr><tr><td>Volatility (ATR)</td><td>" + fmt(inst.atr_pct, 2) +
+      "%</td></tr><tr><td>From its 52-week high</td><td>" + fmt(inst.from_high, 1) +
+      "%</td></tr></tbody></table>" +
+      (inst.liquidity_caveat
+        ? '<p class="sub" style="color:var(--warn)">' + esc(inst.liquidity_caveat) + "</p>" : "") +
+      (inst.notes ? '<p class="sub">' + esc(inst.notes) + "</p>" : "") +
+    "</div>" +
+
+    '<div class="note">Whether to buy this is not something this page will answer. It shows ' +
+    "which conditions hold, what the trade would look like, and that across 915 backtest " +
+    "trades the target was reached 21% of the time and the stop 33%. Two of every three lost " +
+    "money. The decision is yours.</div>";
+
+  document.querySelectorAll(".tab").forEach(function (t) {
+    t.setAttribute("aria-selected", "false");
+  });
+  ["positions", "market", "learn"].forEach(function (v) {
+    document.getElementById("view-" + v).classList.add("hidden");
+  });
+  document.getElementById("view-detail").classList.remove("hidden");
+  window.scrollTo({ top: 0 });
 }
 
 function renderLearn() {
@@ -708,7 +976,7 @@ function renderLearn() {
   ];
   document.getElementById("exits-learn").innerHTML = rows.map(function (x) {
     return '<tr><td><span class="dot ' + x[0] + '"></span><b>' + x[1] + "</b></td>" +
-      "<td>" + x[2] + '</td><td class="n tnum">' + (x[3] * 100).toFixed(1) + "%</td>" +
+      "<td>" + x[2] + '</td><td class="n tnum">' + fmt(x[3] * 100, 1) + "%</td>" +
       '<td class="n faint">median ' + x[4] + "</td></tr>";
   }).join("");
 }
@@ -828,6 +1096,7 @@ document.querySelectorAll(".tab").forEach(function (tab) {
     document.querySelectorAll(".tab").forEach(function (t) {
       t.setAttribute("aria-selected", String(t === tab));
     });
+    document.getElementById("view-detail").classList.add("hidden");
     ["positions", "market", "learn"].forEach(function (v) {
       document.getElementById("view-" + v).classList.toggle("hidden", v !== tab.dataset.view);
     });
@@ -858,6 +1127,10 @@ fetch("market.json?v=" + Date.now())
       : "No price data";
     document.getElementById("stamp").textContent =
       Object.keys(MKT.instruments).length + " instruments";
+
+    document.getElementById("d-back").addEventListener("click", function () {
+      document.querySelector('[data-view="market"]').click();
+    });
 
     wireForm();
     renderPositions();
