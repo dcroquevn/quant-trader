@@ -55,6 +55,8 @@ from app.optimization.walkforward import run_walk_forward
 from app.projections.analogues import DEFAULT_MAX_DISTANCE
 from app.projections.runner import DEFAULT_HORIZONS, project_symbol
 from app.indicators.registry import compute_features, latest_features
+from app.reporting.evidence import load_evidence, measure_profiles
+from app.strategies.profiles import RISK_PROFILES, get_profile
 from app.strategies.registry import available_strategies, build_strategy, strategy_catalog
 from app.strategies.scanner import scan_all, scan_market
 
@@ -678,6 +680,93 @@ def strategies() -> None:
         for key, value in entry["default_params"].items():
             table.add_row(key, str(value))
         console.print(table)
+
+
+@app.command("profiles")
+def profiles(
+    measure: bool = typer.Option(
+        False,
+        "--measure",
+        help="Re-run every profile over TRAIN and VALIDATION and store the result.",
+    ),
+    market: str = typer.Option("USA", "--market", "-m"),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+) -> None:
+    """The named risk settings, and what each one measured.
+
+    A profile is the same strategy with different numbers. They were chosen by reasoning about
+    which direction each parameter moves risk -- not by trying combinations and keeping the one
+    that scored best, which would fit the setting to the sample it was picked on.
+
+    ``--measure`` opens TRAIN and VALIDATION only. TEST stays shut.
+    """
+    setup_logging()
+    init_database()
+    _banner()
+
+    if measure:
+        with session_scope() as session:
+            measure_profiles(session, market=market, strategy_name=strategy_name)
+
+    defaults = build_strategy(strategy_name).params.to_dict()
+    evidence = load_evidence(strategy_name=strategy_name)
+
+    for profile in RISK_PROFILES:
+        console.print(
+            Panel(
+                f"[bold cyan]{profile.title}[/bold cyan]  ({profile.name})\n\n"
+                f"{profile.summary}",
+                expand=False,
+            )
+        )
+        if profile.overrides:
+            table = Table(header_style="bold cyan", show_edge=False)
+            table.add_column("parameter")
+            table.add_column("default", justify="right")
+            table.add_column("this profile", justify="right")
+            for key, value in profile.overrides.items():
+                table.add_row(key, str(defaults.get(key)), f"[yellow]{value}[/yellow]")
+            console.print(table)
+        else:
+            console.print("  Uses every default unchanged.")
+
+    if not evidence.available:
+        console.print(f"\n[yellow]No measured record:[/yellow] {evidence.reason}")
+        return
+
+    windows = ", ".join(
+        f"{name} {w['start']}..{w['end']}" for name, w in evidence.windows.items()
+    )
+    console.print(
+        f"\n[bold]Measured {evidence.measured_on}[/bold] over {evidence.universe_size} "
+        f"instruments ({windows}). TEST not opened."
+    )
+
+    for split in ("train", "validation"):
+        table = Table(
+            title=f"{split.upper()}", header_style="bold cyan", title_justify="left"
+        )
+        table.add_column("profile")
+        for column in ("trades", "CAGR %", "max DD %", "Sharpe", "win %", "profit factor"):
+            table.add_column(column, justify="right")
+        for profile in RISK_PROFILES:
+            row = evidence.by_profile.get(profile.name, {}).get(split, {})
+            table.add_row(
+                profile.name,
+                _fmt(row.get("n_trades"), 0),
+                _fmt(row.get("cagr_pct")),
+                _fmt(row.get("max_drawdown_pct")),
+                _fmt(row.get("sharpe")),
+                _fmt(row.get("win_rate_pct"), 1),
+                _fmt(row.get("profit_factor")),
+            )
+        console.print(table)
+
+    console.print(
+        "\n[dim]TRAIN is 2016-2021, which was mostly a rising market; VALIDATION is "
+        "2022-2023, which was not. A profile that looks better only on the first was "
+        "measuring the market, not the rules.[/dim]"
+    )
 
 
 @app.command("scan")

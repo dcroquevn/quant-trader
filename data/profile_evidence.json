@@ -1,0 +1,377 @@
+{
+  "measured_on": "2026-10-02",
+  "market": "USA",
+  "strategy": "trend_momentum",
+  "universe_size": 42,
+  "fingerprint": "171fda92a585de04",
+  "params": {
+    "steady": {
+      "require_price_above_ema200": true,
+      "require_ema50_above_ema200": true,
+      "min_ema50_slope_pct": 0.0,
+      "rsi_min": 40.0,
+      "rsi_max": 70.0,
+      "require_macd_positive": true,
+      "roc_period": 20,
+      "min_roc_pct": 0.0,
+      "min_relative_volume": 1.2,
+      "min_dollar_volume": 0.0,
+      "min_atr_pct": 0.5,
+      "max_atr_pct": 8.0,
+      "stop_atr_multiple": 2.0,
+      "take_profit_r_multiple": 3.0,
+      "trailing_stop_atr_multiple": 0.0,
+      "max_holding_bars": 60,
+      "exit_on_trend_break": true,
+      "exit_rsi_max": 80.0
+    },
+    "bold": {
+      "require_price_above_ema200": true,
+      "require_ema50_above_ema200": true,
+      "min_ema50_slope_pct": 0.0,
+      "rsi_min": 40.0,
+      "rsi_max": 70.0,
+      "require_macd_positive": true,
+      "roc_period": 20,
+      "min_roc_pct": 0.0,
+      "min_relative_volume": 1.2,
+      "min_dollar_volume": 0.0,
+      "min_atr_pct": 0.5,
+      "max_atr_pct": 8.0,
+      "stop_atr_multiple": 2.5,
+      "take_profit_r_multiple": 4.0,
+      "trailing_stop_atr_multiple": 0.0,
+      "max_holding_bars": 90,
+      "exit_on_trend_break": false,
+      "exit_rsi_max": 80.0
+    },
+    "aggressive": {
+      "require_price_above_ema200": true,
+      "require_ema50_above_ema200": true,
+      "min_ema50_slope_pct": 0.0,
+      "rsi_min": 35.0,
+      "rsi_max": 80.0,
+      "require_macd_positive": false,
+      "roc_period": 20,
+      "min_roc_pct": 0.0,
+      "min_relative_volume": 1.0,
+      "min_dollar_volume": 0.0,
+      "min_atr_pct": 1.5,
+      "max_atr_pct": 12.0,
+      "stop_atr_multiple": 3.0,
+      "take_profit_r_multiple": 5.0,
+      "trailing_stop_atr_multiple": 0.0,
+      "max_holding_bars": 120,
+      "exit_on_trend_break": false,
+      "exit_rsi_max": 80.0
+    }
+  },
+  "windows": {
+    "train": {
+      "start": "2016-01-01",
+      "end": "2021-12-31"
+    },
+    "validation": {
+      "start": "2022-01-01",
+      "end": "2023-12-31"
+    }
+  },
+  "splits_read": [
+    "train",
+    "validation"
+  ],
+  "sizing": {
+    "risk_per_trade_pct": 1.0,
+    "max_position_size_pct": 10.0,
+    "max_simultaneous_positions": 10,
+    "note": "Identical for every profile, so a difference between rows is a difference in rules and not in bet size."
+  },
+  "by_profile": {
+    "steady": {
+      "train": {
+        "n_trades": 586,
+        "cagr_pct": 13.442112468503641,
+        "max_drawdown_pct": -13.892817816021807,
+        "sharpe": 1.153420684806966,
+        "win_rate_pct": 38.05460750853242,
+        "profit_factor": 1.6272601618877116,
+        "average_win": 1313.0921407606463,
+        "average_loss": -495.72000759260936,
+        "exposure_pct": 61.74943759099934,
+        "top_5pct_share_of_pnl": 89.6,
+        "exits": {
+          "trend_break": {
+            "share_pct": 39.9,
+            "median_pnl_pct": -1.06,
+            "n": 234
+          },
+          "stop_loss": {
+            "share_pct": 32.6,
+            "median_pnl_pct": -3.83,
+            "n": 191
+          },
+          "take_profit": {
+            "share_pct": 22.4,
+            "median_pnl_pct": 10.38,
+            "n": 131
+          },
+          "rsi_extended": {
+            "share_pct": 2.6,
+            "median_pnl_pct": 7.66,
+            "n": 15
+          },
+          "max_holding_period": {
+            "share_pct": 1.9,
+            "median_pnl_pct": 11.24,
+            "n": 11
+          },
+          "end_of_backtest": {
+            "share_pct": 0.7,
+            "median_pnl_pct": 3.53,
+            "n": 4
+          }
+        },
+        "holding": {
+          "winner_sessions": 26.0,
+          "loser_sessions": 7.0,
+          "n_wins": 223,
+          "n_losses": 363
+        }
+      },
+      "validation": {
+        "n_trades": 185,
+        "cagr_pct": 0.09075528774453723,
+        "max_drawdown_pct": -15.181299310827,
+        "sharpe": 0.06377365525609291,
+        "win_rate_pct": 29.18918918918919,
+        "profit_factor": 1.0040924392318917,
+        "average_win": 818.8634344390988,
+        "average_loss": -336.1709998460435,
+        "exposure_pct": 48.307387824351295,
+        "top_5pct_share_of_pnl": 11367.7,
+        "exits": {
+          "trend_break": {
+            "share_pct": 45.4,
+            "median_pnl_pct": -1.31,
+            "n": 84
+          },
+          "stop_loss": {
+            "share_pct": 35.1,
+            "median_pnl_pct": -4.63,
+            "n": 65
+          },
+          "take_profit": {
+            "share_pct": 11.9,
+            "median_pnl_pct": 13.86,
+            "n": 22
+          },
+          "end_of_backtest": {
+            "share_pct": 4.9,
+            "median_pnl_pct": 3.53,
+            "n": 9
+          },
+          "rsi_extended": {
+            "share_pct": 1.6,
+            "median_pnl_pct": 12.55,
+            "n": 3
+          },
+          "max_holding_period": {
+            "share_pct": 1.1,
+            "median_pnl_pct": 14.02,
+            "n": 2
+          }
+        },
+        "holding": {
+          "winner_sessions": 19.5,
+          "loser_sessions": 7.0,
+          "n_wins": 54,
+          "n_losses": 131
+        }
+      }
+    },
+    "bold": {
+      "train": {
+        "n_trades": 330,
+        "cagr_pct": 16.685700608350174,
+        "max_drawdown_pct": -20.448546604412154,
+        "sharpe": 1.2125944426898165,
+        "win_rate_pct": 40.60606060606061,
+        "profit_factor": 1.9487257432255825,
+        "average_win": 2330.5231623177096,
+        "average_loss": -817.6198530804908,
+        "exposure_pct": 70.07228749172734,
+        "top_5pct_share_of_pnl": 60.9,
+        "exits": {
+          "stop_loss": {
+            "share_pct": 58.2,
+            "median_pnl_pct": -4.81,
+            "n": 192
+          },
+          "take_profit": {
+            "share_pct": 14.8,
+            "median_pnl_pct": 17.35,
+            "n": 49
+          },
+          "max_holding_period": {
+            "share_pct": 12.4,
+            "median_pnl_pct": 9.12,
+            "n": 41
+          },
+          "rsi_extended": {
+            "share_pct": 12.1,
+            "median_pnl_pct": 13.06,
+            "n": 40
+          },
+          "end_of_backtest": {
+            "share_pct": 2.4,
+            "median_pnl_pct": 3.43,
+            "n": 8
+          }
+        },
+        "holding": {
+          "winner_sessions": 57.0,
+          "loser_sessions": 12.0,
+          "n_wins": 134,
+          "n_losses": 196
+        }
+      },
+      "validation": {
+        "n_trades": 118,
+        "cagr_pct": 0.7655964356887424,
+        "max_drawdown_pct": -21.12712616306992,
+        "sharpe": 0.12337042934780236,
+        "win_rate_pct": 29.66101694915254,
+        "profit_factor": 1.0337662951569215,
+        "average_win": 1334.2981765376426,
+        "average_loss": -544.2776188506953,
+        "exposure_pct": 60.13818123752496,
+        "top_5pct_share_of_pnl": 1080.8,
+        "exits": {
+          "stop_loss": {
+            "share_pct": 67.8,
+            "median_pnl_pct": -6.6,
+            "n": 80
+          },
+          "max_holding_period": {
+            "share_pct": 9.3,
+            "median_pnl_pct": 6.97,
+            "n": 11
+          },
+          "take_profit": {
+            "share_pct": 8.5,
+            "median_pnl_pct": 22.77,
+            "n": 10
+          },
+          "end_of_backtest": {
+            "share_pct": 8.5,
+            "median_pnl_pct": 9.72,
+            "n": 10
+          },
+          "rsi_extended": {
+            "share_pct": 5.9,
+            "median_pnl_pct": 9.91,
+            "n": 7
+          }
+        },
+        "holding": {
+          "winner_sessions": 46.0,
+          "loser_sessions": 10.0,
+          "n_wins": 35,
+          "n_losses": 83
+        }
+      }
+    },
+    "aggressive": {
+      "train": {
+        "n_trades": 261,
+        "cagr_pct": 18.956023510034072,
+        "max_drawdown_pct": -23.20435544020277,
+        "sharpe": 1.1787113677248784,
+        "win_rate_pct": 45.97701149425287,
+        "profit_factor": 2.0485006919292856,
+        "average_win": 2977.4403785435475,
+        "average_loss": -1236.9982697637756,
+        "exposure_pct": 73.29668762409001,
+        "top_5pct_share_of_pnl": 51.4,
+        "exits": {
+          "stop_loss": {
+            "share_pct": 52.1,
+            "median_pnl_pct": -6.93,
+            "n": 136
+          },
+          "rsi_extended": {
+            "share_pct": 23.4,
+            "median_pnl_pct": 18.07,
+            "n": 61
+          },
+          "max_holding_period": {
+            "share_pct": 16.5,
+            "median_pnl_pct": 15.22,
+            "n": 43
+          },
+          "take_profit": {
+            "share_pct": 4.2,
+            "median_pnl_pct": 30.57,
+            "n": 11
+          },
+          "end_of_backtest": {
+            "share_pct": 3.8,
+            "median_pnl_pct": 1.78,
+            "n": 10
+          }
+        },
+        "holding": {
+          "winner_sessions": 71.5,
+          "loser_sessions": 17.0,
+          "n_wins": 120,
+          "n_losses": 141
+        }
+      },
+      "validation": {
+        "n_trades": 92,
+        "cagr_pct": -3.1846918596473373,
+        "max_drawdown_pct": -28.169716389134113,
+        "sharpe": -0.12160901316040132,
+        "win_rate_pct": 34.78260869565217,
+        "profit_factor": 0.8595438570371818,
+        "average_win": 1189.9428238418382,
+        "average_loss": -738.3406530333614,
+        "exposure_pct": 66.84034011976048,
+        "top_5pct_share_of_pnl": -224.9,
+        "exits": {
+          "stop_loss": {
+            "share_pct": 64.1,
+            "median_pnl_pct": -9.55,
+            "n": 59
+          },
+          "max_holding_period": {
+            "share_pct": 15.2,
+            "median_pnl_pct": 13.2,
+            "n": 14
+          },
+          "end_of_backtest": {
+            "share_pct": 10.9,
+            "median_pnl_pct": 1.92,
+            "n": 10
+          },
+          "rsi_extended": {
+            "share_pct": 6.5,
+            "median_pnl_pct": 17.74,
+            "n": 6
+          },
+          "take_profit": {
+            "share_pct": 3.3,
+            "median_pnl_pct": 61.43,
+            "n": 3
+          }
+        },
+        "holding": {
+          "winner_sessions": 75.5,
+          "loser_sessions": 13.0,
+          "n_wins": 32,
+          "n_losses": 60
+        }
+      }
+    }
+  }
+}

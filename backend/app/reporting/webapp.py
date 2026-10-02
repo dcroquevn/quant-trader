@@ -33,6 +33,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.config import get_settings
 from app.core.logging import get_logger
 from app.core.universe import (
     ALL_REGIONS,
@@ -111,6 +112,29 @@ def _fx_rates(session: Session) -> dict[str, float]:
     return rates
 
 
+def _round_evidence(rows: dict[str, Any]) -> dict[str, Any]:
+    """Two decimals for display. The artifact on disk keeps full precision as the record.
+
+    A CAGR printed as 13.442112468503641 claims a precision the measurement does not have:
+    it came from 586 trades over six years of one universe.
+    """
+    out: dict[str, Any] = {}
+    for split, row in rows.items():
+        out[split] = {
+            key: (round(value, 2) if isinstance(value, float) else value)
+            for key, value in row.items()
+            if key not in ("exits", "holding")
+        }
+        # Only the endings worth naming: a tail of 0.3% rows is noise on a phone, and
+        # "end_of_backtest" is the sample running out rather than a rule firing.
+        out[split]["exits"] = {
+            k: v for k, v in (row.get("exits") or {}).items()
+            if v.get("share_pct", 0) >= 1.0 and k != "end_of_backtest"
+        }
+        out[split]["holding"] = row.get("holding") or {}
+    return out
+
+
 def build_market_payload(
     session: Session, *, strategy_name: str = "trend_momentum"
 ) -> dict[str, Any]:
@@ -123,7 +147,15 @@ def build_market_payload(
     from app.core.exceptions import InsufficientDataError
     from app.strategies.registry import build_strategy
 
-    strategy = build_strategy(strategy_name)
+    from app.reporting.evidence import load_evidence, resolved_profile_params
+    from app.strategies.profiles import RISK_PROFILES, get_profile
+
+    settings = get_settings()
+    active = get_profile(settings.strategy_profile).name
+    resolved = resolved_profile_params(strategy_name)
+    built = {name: build_strategy(strategy_name, p) for name, p in resolved.items()}
+
+    strategy = built[active]
     params = strategy.params.to_dict()
     symbols = [spec.symbol for spec in DEFAULT_UNIVERSE]
 
@@ -132,39 +164,43 @@ def build_market_payload(
     except InsufficientDataError:
         frames, skipped = {}, [f"{s}: no stored bars" for s in symbols]
 
-    from app.strategies.scanner import scan_market
-
-    scan = scan_market(session, strategy, "USA", log_decisions=False)
-    readings = {row.symbol: row for row in scan.rows}
-
     instruments: dict[str, Any] = {}
     for spec in DEFAULT_UNIVERSE:
         frame = frames.get(spec.symbol)
         if frame is None or frame.empty:
             continue
         series = _series(frame, HISTORY_SESSIONS)
-        reading = readings.get(spec.symbol)
-
-        # Evaluated again rather than taken from the scan row, which keeps only the failing
-        # reasons. The app needs every condition with its measured value: "which one is
-        # stopping this?" is the question a score of 0.71 raises and cannot answer.
-        decision = strategy.evaluate(frame, in_position=False)
-        conditions = [
-            {"name": c.name, "ok": bool(c.passed), "detail": c.detail}
-            for c in decision.components
-        ]
-
-        # What it would propose if entered today. Available regardless of the signal, because a
-        # stop is a volatility measurement and not part of the entry decision.
-        proposed = strategy.propose_levels(frame)
         last_close = float(frame["close"].iloc[-1])
-        levels = None
-        if proposed and last_close > proposed[0]:
-            stop, target = proposed
-            levels = {
-                "stop": round(stop, 4),
-                "target": round(target, 4),
-                "rr": round((target - last_close) / (last_close - stop), 2),
+
+        # Once per profile, because the entry conditions themselves differ between them. A
+        # single signal would silently describe whichever one the server happened to be set
+        # to, while the reader looked at a different one.
+        by_profile: dict[str, Any] = {}
+        for name, candidate in built.items():
+            decision = candidate.evaluate(frame, in_position=False)
+
+            # What it would propose if entered today, whatever the signal says: a stop is a
+            # volatility measurement, not part of the entry decision.
+            proposed = candidate.propose_levels(frame)
+            levels = None
+            if proposed and last_close > proposed[0]:
+                stop, target = proposed
+                levels = {
+                    "stop": round(stop, 4),
+                    "target": round(target, 4),
+                    "rr": round((target - last_close) / (last_close - stop), 2),
+                }
+
+            by_profile[name] = {
+                "signal": decision.action.value
+                if hasattr(decision.action, "value")
+                else str(decision.action),
+                "score": round(decision.score, 2),
+                "conditions": [
+                    {"name": c.name, "ok": bool(c.passed), "detail": c.detail}
+                    for c in decision.components
+                ],
+                "levels": levels,
             }
 
         def feature(name: str) -> float | None:
@@ -174,8 +210,7 @@ def build_market_payload(
             return None if value != value else round(float(value), 4)
 
         instruments[spec.symbol] = {
-            "conditions": conditions,
-            "levels": levels,
+            "by_profile": by_profile,
             "ema200": feature("ema_200"),
             "rsi": feature("rsi_14"),
             "macd_hist": feature("macd_hist"),
@@ -190,9 +225,6 @@ def build_market_payload(
             "thin": spec.is_thinly_traded,
             "liquidity_caveat": spec.liquidity_caveat,
             "notes": spec.notes,
-            "signal": reading.action if reading else "UNKNOWN",
-            "score": round(reading.score, 2) if reading else None,
-            "reasons": list(reading.reasons) if reading else [],
             "d": series.dates,
             "h": series.high,
             "l": series.low,
@@ -220,6 +252,30 @@ def build_market_payload(
         (row["d"][-1] for row in instruments.values() if row["d"]), default=None
     )
 
+    evidence = load_evidence(strategy_name=strategy_name)
+    profiles = [
+        {
+            "name": profile.name,
+            "title": profile.title,
+            "summary": profile.summary,
+            # Every parameter the browser needs to recompute levels and walk the exits. Not
+            # the whole set: the entry conditions are evaluated here, server-side.
+            "params": {
+                key: resolved[profile.name].get(key)
+                for key in (
+                    "stop_atr_multiple",
+                    "take_profit_r_multiple",
+                    "max_holding_bars",
+                    "exit_on_trend_break",
+                    "exit_rsi_max",
+                )
+            },
+            "changes": profile.overrides,
+            "evidence": _round_evidence(evidence.by_profile.get(profile.name, {})),
+        }
+        for profile in RISK_PROFILES
+    ]
+
     return {
         "version": PAYLOAD_VERSION,
         "generated_at": date.today().isoformat(),
@@ -227,8 +283,17 @@ def build_market_payload(
         "verification_date": VERIFICATION_DATE,
         "turnover_window": TURNOVER_WINDOW,
         "liquidity_threshold": LIQUIDITY_CONCERN_USD,
+        "profiles": profiles,
+        "evidence": {
+            "available": evidence.available,
+            "reason": evidence.reason,
+            "measured_on": evidence.measured_on,
+            "universe_size": evidence.universe_size,
+            "windows": evidence.windows,
+        },
         "strategy": {
             "name": strategy_name,
+            "profile": active,
             # The browser recomputes the exit levels, so the parameters travel with the data.
             # Hardcoding them in the JavaScript is how the two implementations would drift.
             "stop_atr_multiple": params.get("stop_atr_multiple"),
@@ -238,12 +303,6 @@ def build_market_payload(
             "exit_rsi_max": params.get("exit_rsi_max"),
         },
         # Measured over 915 TRAIN trades; see the horizon section of the README.
-        "exit_base_rates": {
-            "trend_break": 0.398,
-            "stop_loss": 0.332,
-            "take_profit": 0.214,
-            "time": 0.016,
-        },
         # Rates the page needs to turn a cash amount into a share count. A daily close, not
         # what a broker applied -- stated here so the page can say so too.
         "fx": _fx_rates(session),

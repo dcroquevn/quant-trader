@@ -96,7 +96,7 @@ class TestPayloadCarriesNothingPersonal:
         payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
         assert set(payload) == {
             "version", "generated_at", "as_of", "verification_date", "turnover_window",
-            "liquidity_threshold", "strategy", "exit_base_rates", "fx", "regions",
+            "liquidity_threshold", "strategy", "profiles", "evidence", "fx", "regions",
             "instruments", "skipped",
         }
 
@@ -104,10 +104,9 @@ class TestPayloadCarriesNothingPersonal:
         payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
         instrument = payload["instruments"]["GOOGL"]
         assert set(instrument) == {
-            "conditions", "levels", "ema200", "rsi", "macd_hist", "rel_volume", "atr_pct",
+            "by_profile", "ema200", "rsi", "macd_hist", "rel_volume", "atr_pct",
             "from_high", "name", "region", "sector", "etf", "turnover", "thin",
-            "liquidity_caveat", "notes", "signal", "score", "reasons",
-            "d", "h", "l", "c", "e", "a",
+            "liquidity_caveat", "notes", "d", "h", "l", "c", "e", "a",
         }
 
 
@@ -160,7 +159,12 @@ global.document = {{
   createElement: () => el, addEventListener: noop,
 }};
 global.window = {{scrollTo: noop}};
-global.localStorage = {{getItem: () => "[]", setItem: noop}};
+const _store = {{"quant-trader.positions.v1": "[]"}};
+global.localStorage = {{
+  getItem: (k) => (k in _store ? _store[k] : null),
+  setItem: (k, v) => {{ _store[k] = String(v); }},
+  removeItem: (k) => {{ delete _store[k]; }},
+}};
 global.fetch = () => new Promise(() => {{}});
 global.alert = noop;
 global.confirm = () => true;
@@ -266,3 +270,117 @@ console.log(JSON.stringify({fired: ev.fired ? ev.fired.rule : null}));
 """,
         )
         assert got["fired"] is None, "the entry bar triggered its own exit"
+
+
+class TestRiskProfiles:
+    """The dial, and the measurement that has to stay attached to it."""
+
+    def test_every_instrument_is_evaluated_under_every_profile(self, built) -> None:
+        """A missing profile would render an empty detail page, silently."""
+        from app.strategies.profiles import available_profiles
+
+        payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
+        names = set(available_profiles())
+        assert {p["name"] for p in payload["profiles"]} == names
+        for symbol, inst in payload["instruments"].items():
+            assert set(inst["by_profile"]) == names, f"{symbol} is missing a profile"
+
+    def test_a_riskier_profile_places_a_wider_stop(self, built) -> None:
+        """Not a preference: it is what "riskier" means here, and it is checkable."""
+        payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
+        inst = payload["instruments"]["GOOGL"]
+        steady = inst["by_profile"]["steady"]["levels"]
+        aggressive = inst["by_profile"]["aggressive"]["levels"]
+        assert steady and aggressive
+        assert aggressive["stop"] < steady["stop"]
+        assert aggressive["target"] > steady["target"]
+
+    def test_the_measurement_is_withheld_when_the_parameters_change(
+        self, tmp_path
+    ) -> None:
+        """The guard that stops real numbers describing a configuration that never ran.
+
+        Without this, editing a threshold leaves the page showing yesterday's measurement
+        beside today's rules, and every number on it is both true and wrong.
+        """
+        from app.reporting.evidence import load_evidence
+
+        stale = tmp_path / "evidence.json"
+        stale.write_text(
+            json.dumps({"fingerprint": "not-the-current-one", "by_profile": {}}),
+            encoding="utf-8",
+        )
+        evidence = load_evidence(path=stale)
+        assert not evidence.available
+        assert "different parameters" in evidence.reason
+
+    def test_a_missing_measurement_says_so_rather_than_guessing(self, tmp_path) -> None:
+        from app.reporting.evidence import load_evidence
+
+        evidence = load_evidence(path=tmp_path / "absent.json")
+        assert not evidence.available
+        assert "No measurement" in evidence.reason
+
+    def test_the_published_payload_carries_no_hand_typed_base_rates(self, built) -> None:
+        """Every frequency on the page has to come from the measurement.
+
+        The four that used to be hardcoded were from an older universe, and one of them had
+        drifted: the page claimed a median winner of 36 sessions where the measurement says
+        26. A number nobody re-derives is a number that quietly stops being true.
+        """
+        payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
+        assert "exit_base_rates" not in payload
+        html = (built / "index.html").read_text(encoding="utf-8")
+        assert "21% of the time" not in html
+        assert "median winner took 36" not in html
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+class TestTheBrowserHonoursTheProfile:
+    """Switching the dial has to change the verdict, not just the words next to it."""
+
+    _run = TestBrowserArithmeticMatchesPython._run
+
+    def test_turning_off_the_trend_break_keeps_a_wobbling_position_open(
+        self, built
+    ) -> None:
+        """The difference that makes the riskier settings riskier.
+
+        Under "steady" a close below the 50-day average is an exit. Under "aggressive" it is
+        not, so the same position stays open and runs to its stop or its target instead. If
+        the page ever applied one profile's exits to another's levels, this is what fails.
+        """
+        got = self._run(
+            built,
+            """
+const inst = MKT.instruments.GOOGL;
+const n = inst.c.length - 1;
+// Find a bar whose close sits under the 50-day average, and open a position before it with
+// levels far enough away that only the trend rule can speak.
+let at = -1;
+for (let i = n; i > 20; i--) {
+  if (inst.e[i] != null && inst.c[i] < inst.e[i]) { at = i; break; }
+}
+const start = at - 5;
+const pos = {symbol: "GOOGL", price: inst.c[start], shares: 1, date: inst.d[start],
+             amount: 100, currency: "USD",
+             stop: inst.c[start] * 0.2, target: inst.c[start] * 5};
+const out = {};
+["steady", "aggressive"].forEach(function (name) {
+  localStorage.setItem("quant-trader.profile.v1", name);
+  const ev = evaluate(pos);
+  out[name] = {verdict: ev.verdict, rule: ev.fired ? ev.fired.rule : null,
+               breaks: P().exit_on_trend_break};
+});
+out.found = at;
+console.log(JSON.stringify(out));
+""",
+        )
+        assert got["found"] > 0, "no bar closed under its 50-day average in the sample"
+        assert got["steady"]["breaks"] is True
+        assert got["aggressive"]["breaks"] is False
+        assert got["steady"]["verdict"] == "SELL"
+        assert got["steady"]["rule"] == "trend"
+        assert got["aggressive"]["verdict"] == "HOLD", (
+            "the aggressive setting has no trend-break exit, so this must stay open"
+        )

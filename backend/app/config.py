@@ -117,6 +117,16 @@ class Settings(BaseSettings):
     max_sector_exposure_pct: float = 35.0
     stale_data_max_age_days: int = 5
 
+    # ---- Strategy ---------------------------------------------------------
+    strategy_profile: str = "steady"
+    """Which named risk setting the scanner, the watch and the published app use.
+
+    See :mod:`app.strategies.profiles`. "steady" closes a position as soon as the trend
+    wobbles; "bold" and "aggressive" let trades run to the stop or the target, which widens
+    the outcomes in both directions. The published page lets a reader switch between them,
+    so this only sets the default.
+    """
+
     # ---- Backtest defaults ----------------------------------------------
     initial_capital_usd: float = 100_000.0
     initial_capital_clp: float = 50_000_000.0

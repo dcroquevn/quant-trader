@@ -168,6 +168,24 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
 .chev{color:var(--faint);font-size:17px;line-height:1}
 .lnk{background:none;border:0;padding:0;color:var(--accent);font:inherit;cursor:pointer;
   text-decoration:underline;text-underline-offset:2px}
+/* ---- the risk dial ---- */
+.risk{display:flex;gap:6px;margin:0 0 10px}
+.risk button{flex:1;padding:9px 4px;border-radius:9px;border:1px solid var(--line2);
+  background:var(--raised);color:var(--dim);font:600 12.5px/1.2 inherit;cursor:pointer}
+.risk button[aria-pressed="true"]{background:#1d2740;border-color:var(--accent);
+  color:var(--text)}
+.risk button span{display:block;font-weight:400;font-size:10px;color:var(--faint);
+  margin-top:3px}
+.risk button[aria-pressed="true"] span{color:var(--dim)}
+.evd{width:100%;font-size:12px;margin-top:10px}
+.evd th{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.04em;
+  padding:0 5px 6px;text-align:right;font-weight:600}
+.evd th:first-child{text-align:left}
+.evd td{padding:6px 5px;border-top:1px solid var(--line);text-align:right;
+  font-variant-numeric:tabular-nums}
+.evd td:first-child{text-align:left;color:var(--dim)}
+.evd tr.here td{color:var(--text);font-weight:600}
+.evd tr.here td:first-child{color:var(--accent)}
 </style>
 </head>
 <body>
@@ -184,6 +202,8 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
 <div id="boot" class="card">Loading market data…</div>
 
 <main id="app" class="hidden">
+
+  <div id="riskbar"></div>
 
   <div class="tabs" role="tablist">
     <button class="tab" role="tab" aria-selected="true" data-view="positions">Your positions</button>
@@ -341,7 +361,33 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
  * State
  * ------------------------------------------------------------------ */
 var KEY = "quant-trader.positions.v1";
+var PKEY = "quant-trader.profile.v1";
 var MKT = null;
+
+/* The selected risk setting. Falls back to the published default when storage is empty or
+   names a profile that no longer exists -- an old phone should not pin the page to a setting
+   that was removed. */
+function profileName() {
+  var stored = null;
+  try { stored = localStorage.getItem(PKEY); } catch (e) { stored = null; }
+  var known = (MKT.profiles || []).some(function (p) { return p.name === stored; });
+  return known ? stored : MKT.strategy.profile;
+}
+function setProfileName(name) {
+  try { localStorage.setItem(PKEY, name); } catch (e) { /* the page still works */ }
+}
+function profile() {
+  var want = profileName();
+  var found = null;
+  (MKT.profiles || []).forEach(function (p) { if (p.name === want) found = p; });
+  return found || MKT.profiles[0];
+}
+/* Every parameterised number comes from here, so one switch moves all of them at once. */
+function P() { return profile().params; }
+/* An instrument as the selected profile sees it: its signal, score, conditions and levels. */
+function view(inst) {
+  return (inst.by_profile || {})[profileName()] || { conditions: [], levels: null };
+}
 
 function loadPositions() {
   try { return JSON.parse(localStorage.getItem(KEY) || "[]"); }
@@ -375,11 +421,11 @@ function levelsFor(inst, entryISO) {
   var close = inst.c[i], atr = inst.a[i];
   if (!(close > 0) || !(atr > 0)) return null;
 
-  var stop = close - MKT.strategy.stop_atr_multiple * atr;
+  var stop = close - P().stop_atr_multiple * atr;
   if (!(stop > 0)) return null;
   return {
     stop: stop,
-    target: close + MKT.strategy.take_profit_r_multiple * (close - stop),
+    target: close + P().take_profit_r_multiple * (close - stop),
     anchor: close,
     anchorDate: inst.d[i],
     index: i
@@ -410,10 +456,12 @@ function evaluate(pos) {
   for (var i = start + 1; i <= last; i++) {
     if (inst.l[i] <= lv.stop) { fired = { rule: "stop", at: inst.d[i] }; break; }
     if (inst.h[i] >= lv.target) { fired = { rule: "target", at: inst.d[i] }; break; }
-    if (inst.e[i] != null && inst.c[i] < inst.e[i]) {
+    // Only an exit when the selected profile uses it. Bold and aggressive switch it off,
+    // which is most of what makes them riskier: a trade then runs to its stop or its target.
+    if (P().exit_on_trend_break && inst.e[i] != null && inst.c[i] < inst.e[i]) {
       fired = { rule: "trend", at: inst.d[i] }; break;
     }
-    if (i - start >= MKT.strategy.max_holding_bars) {
+    if (i - start >= P().max_holding_bars) {
       fired = { rule: "time", at: inst.d[i] }; break;
     }
   }
@@ -432,14 +480,14 @@ function evaluate(pos) {
       stop: "The stop at " + fmt(lv.stop) + " was reached on " + fired.at + ".",
       target: "The target at " + fmt(lv.target) + " was reached on " + fired.at + ".",
       trend: "The close fell under the 50-day average on " + fired.at + ".",
-      time: "It passed " + MKT.strategy.max_holding_bars + " sessions."
+      time: "It passed " + P().max_holding_bars + " sessions."
     }[fired.rule];
     return out;
   }
 
   // Nothing has fired. A condition met on today's close becomes an exit at the next session's
   // open, so it is reported separately rather than as a trigger.
-  if (ema != null && lastClose < ema) {
+  if (P().exit_on_trend_break && ema != null && lastClose < ema) {
     out.verdict = "SELL";
     out.pending = true;
     out.why = "Today's close " + fmt(lastClose) + " is under the 50-day average " + fmt(ema) +
@@ -448,7 +496,10 @@ function evaluate(pos) {
   }
 
   out.verdict = "HOLD";
-  out.why = "None of the four exit rules has been met.";
+  out.why = P().exit_on_trend_break
+    ? "None of the four exit rules has been met."
+    : "Neither the stop, the target nor the time limit has been reached. This setting has "
+      + "no trend-break exit, so a wobble does not close it.";
   return out;
 }
 
@@ -580,6 +631,57 @@ function chart(pos, ev) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Measured exit behaviour, for the selected profile.
+ *
+ * TRAIN rather than VALIDATION: it is the larger sample, and it is the one the rules were
+ * built against. Both are on the page above, and they disagree -- which is the point.
+ * ------------------------------------------------------------------ */
+function exitStats() {
+  return (((profile().evidence || {}).train) || {}).exits || {};
+}
+function holdingNote() {
+  // Measured for the selected setting, not quoted from one. The gap between the two numbers
+  // is what the strategy is trying to produce, and it widens with the risk dial.
+  var h = (((profile().evidence || {}).train) || {}).holding || {};
+  if (h.winner_sessions == null || h.loser_sessions == null) return "";
+  return '<p class="sub">Doing nothing is the default. On this setting the median winner ' +
+    "took " + fmt(h.winner_sessions, 0) + " sessions to get there and the median loser was " +
+    "out in " + fmt(h.loser_sessions, 0) + ".</p>";
+}
+function trainTrades() {
+  var n = (((profile().evidence || {}).train) || {}).n_trades;
+  return n == null ? "the" : String(n);
+}
+function lossRate() {
+  var w = (((profile().evidence || {}).train) || {}).win_rate_pct;
+  return w == null ? "Most" : fmt(100 - w, 0) + "% of them";
+}
+function exitRate(rule) {
+  var s = exitStats()[rule];
+  return s ? fmt(s.share_pct, 0) + "%" : "not measured";
+}
+function exitMedian(rule) {
+  var s = exitStats()[rule];
+  return s ? pct(s.median_pnl_pct) : "n/a";
+}
+/* The ending that happened most often, named rather than assumed: it is the stop under the
+   riskier settings and the trend break under the steady one. */
+function commonestExit() {
+  var stats = exitStats(), best = null;
+  Object.keys(stats).forEach(function (k) {
+    if (!best || stats[k].share_pct > stats[best].share_pct) best = k;
+  });
+  return best;
+}
+var EXIT_LABELS = {
+  trend_break: "a close under the 50-day average",
+  stop_loss: "the stop",
+  take_profit: "the target",
+  max_holding_period: "the time limit",
+  rsi_extended: "an RSI above the exit threshold"
+};
+
+/* ------------------------------------------------------------------ *
  * Rendering
  * ------------------------------------------------------------------ */
 function rulesTable(pos, ev) {
@@ -595,22 +697,105 @@ function rulesTable(pos, ev) {
   }
 
   rows.push(['<span class="dot stop"></span>Stop', fmt(ev.levels.stop),
-             dist(ev.levels.stop, "below"), "A fall of this much closes it at a loss."]);
+             dist(ev.levels.stop, "below"),
+             "A fall of this much closes it at a loss. Ended " + exitRate("stop_loss") +
+             " of trades, median " + exitMedian("stop_loss") + "."]);
   rows.push(['<span class="dot target"></span>Target', fmt(ev.levels.target),
              dist(ev.levels.target, "above"),
-             "A rise of this much closes it at a profit. Happened 21% of the time."]);
-  rows.push(['<span class="dot trend"></span>Trend break',
-             ev.ema != null ? fmt(ev.ema) : "moving",
-             ev.ema != null ? dist(ev.ema, "below") : "—",
-             "The close under the 50-day average. The most common ending, 40%."]);
-  rows.push(['<span class="dot time"></span>Time', MKT.strategy.max_holding_bars + " sessions",
+             "A rise of this much closes it at a profit. Ended " + exitRate("take_profit") +
+             " of trades, median " + exitMedian("take_profit") + "."]);
+  if (P().exit_on_trend_break) {
+    rows.push(['<span class="dot trend"></span>Trend break',
+               ev.ema != null ? fmt(ev.ema) : "moving",
+               ev.ema != null ? dist(ev.ema, "below") : "—",
+               "The close under the 50-day average. Ended " + exitRate("trend_break") +
+               " of trades, median " + exitMedian("trend_break") + "."]);
+  } else {
+    rows.push(['<span class="dot trend"></span>Trend break', "off",
+               '<span class="faint">—</span>',
+               "This setting ignores it, so the trade runs to the stop or the target."]);
+  }
+  rows.push(['<span class="dot time"></span>Time', P().max_holding_bars + " sessions",
              '<span class="tnum">' + ev.held + " in</span>",
-             "Sessions, not calendar days — about 85 days."]);
+             "Sessions, not calendar days. Ended " + exitRate("max_holding_period") +
+             " of trades, median " + exitMedian("max_holding_period") + "."]);
 
   return '<table class="rules"><tbody>' + rows.map(function (r) {
     return "<tr><td>" + r[0] + '</td><td class="n tnum">' + r[1] + '</td><td class="n">' +
            r[2] + '</td><td class="faint">' + r[3] + "</td></tr>";
   }).join("") + "</tbody></table>";
+}
+
+function evidenceTable(split) {
+  var rows = MKT.profiles.map(function (p) {
+    var r = (p.evidence || {})[split] || {};
+    var here = p.name === profileName();
+    return '<tr class="' + (here ? "here" : "") + '"><td>' + esc(p.title) + "</td>" +
+      "<td>" + (r.n_trades == null ? "n/a" : r.n_trades) + "</td>" +
+      '<td class="' + (r.cagr_pct >= 0 ? "up" : "down") + '">' + pct(r.cagr_pct) + "</td>" +
+      '<td class="down">' + pct(r.max_drawdown_pct) + "</td>" +
+      "<td>" + (r.profit_factor == null ? "n/a" : fmt(r.profit_factor)) + "</td></tr>";
+  }).join("");
+
+  var w = (MKT.evidence.windows || {})[split] || {};
+  return '<table class="evd"><thead><tr><th>' + esc(split) +
+    " " + esc(w.start || "") + " to " + esc(w.end || "") +
+    "</th><th>trades</th><th>a year</th><th>worst fall</th><th>profit factor</th>" +
+    "</tr></thead><tbody>" + rows + "</tbody></table>";
+}
+
+function renderRisk() {
+  if (!MKT.profiles || !MKT.profiles.length) return;
+  var current = profileName();
+
+  var buttons = MKT.profiles.map(function (p) {
+    var v = ((p.evidence || {}).validation || {});
+    return '<button data-prof="' + esc(p.name) + '" aria-pressed="' +
+      (p.name === current ? "true" : "false") + '">' + esc(p.title) +
+      "<span>worst fall " + pct(v.max_drawdown_pct) + "</span></button>";
+  }).join("");
+
+  var chosen = profile();
+  var body =
+    '<div class="risk">' + buttons + "</div>" +
+    '<p class="sub" style="margin:0">' + esc(chosen.summary) + "</p>";
+
+  if (MKT.evidence.available) {
+    body +=
+      evidenceTable("train") +
+      evidenceTable("validation") +
+      '<p class="sub">Measured on ' + esc(MKT.evidence.measured_on) + " over " +
+      MKT.evidence.universe_size + " instruments, with the same costs, the same bet size " +
+      "and the same universe for all three &mdash; so a difference between rows is a " +
+      "difference in rules, not in how much was staked. The 2024&ndash;2026 data is held " +
+      "back and was not read." +
+      "</p>" +
+      '<div class="note">Read the two tables together. The first period was mostly a ' +
+      "rising market and the riskier settings earned more in it; the second was not, and " +
+      "they lost money while falling further. That is the shape of the choice: more risk " +
+      "bought more of whatever the market was doing, in both directions. Nothing here says " +
+      "which period the next two years will resemble.</div>";
+  } else {
+    body += '<div class="note">' + esc(MKT.evidence.reason) + "</div>";
+  }
+
+  var host = document.getElementById("riskbar");
+  host.innerHTML = '<div class="card"><h2 style="margin-top:0">How much risk</h2>' +
+    body + "</div>";
+
+  host.querySelectorAll("[data-prof]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      if (b.dataset.prof === profileName()) return;
+      setProfileName(b.dataset.prof);
+      renderRisk();
+      renderPositions();
+      renderMarket();
+      renderLearn();
+      // The detail view holds one instrument's numbers, all of which just changed.
+      document.getElementById("view-detail").classList.add("hidden");
+      document.querySelector('[data-view="positions"]').setAttribute("aria-selected", "true");
+    });
+  });
 }
 
 function renderPositions() {
@@ -652,10 +837,7 @@ function renderPositions() {
           "you paid.</p>"
         : "") +
       rulesTable(pos, ev) +
-      (ev.verdict === "HOLD"
-        ? '<p class="sub">Doing nothing is the default. The backtest\'s median winner took 36 ' +
-          "sessions to reach its target; the median loser was out in 8.</p>"
-        : "") +
+      (ev.verdict === "HOLD" ? holdingNote() : "") +
       '<div class="actions"><button class="btn small danger" data-del="' + idx +
       '">Remove</button></div></div>';
   }).join("");
@@ -678,14 +860,15 @@ function strategyLine(symbol) {
   // One strategy, the same one everywhere. Saying so beats letting a reader assume each
   // instrument got a hand-picked method -- none did, and the uniformity is the point: a rule
   // that has to be tuned per symbol has been fitted to that symbol's past.
-  var s = MKT.strategy;
-  return '<p class="sub" style="margin:10px 0 0">Strategy <b>' + esc(s.name) +
-    "</b> &mdash; the same rules on all " + Object.keys(MKT.instruments).length +
-    " instruments. Exit on a close under the 50-day average" +
-    (s.exit_rsi_max ? ", on RSI above " + s.exit_rsi_max : "") +
-    ", at the stop " + s.stop_atr_multiple + " ATR below entry, at the target " +
-    s.take_profit_r_multiple + "x that risk, or after " + s.max_holding_bars +
-    " sessions &mdash; whichever comes first. " +
+  var s = P(), pr = profile();
+  return '<p class="sub" style="margin:10px 0 0">Strategy <b>' + esc(MKT.strategy.name) +
+    "</b>, set to <b>" + esc(pr.title) + "</b> &mdash; the same rules on all " +
+    Object.keys(MKT.instruments).length + " instruments. Exit " +
+    (s.exit_on_trend_break ? "on a close under the 50-day average" : "at the stop ") +
+    (s.exit_on_trend_break ? ", at the stop " + s.stop_atr_multiple + " ATR below entry"
+                           : s.stop_atr_multiple + " ATR below entry") +
+    ", at the target " + s.take_profit_r_multiple + "x that risk, or after " +
+    s.max_holding_bars + " sessions &mdash; whichever comes first. " +
     '<button class="lnk" data-sym="' + esc(symbol) + '">See ' + esc(symbol) +
     " in detail &rsaquo;</button></p>";
 }
@@ -752,16 +935,17 @@ function benchmarkOf(symbol) {
 }
 
 function failingCount(inst) {
-  return (inst.conditions || []).filter(function (c) { return !c.ok; }).length;
+  return (view(inst).conditions || []).filter(function (c) { return !c.ok; }).length;
 }
 
 function marketRow(symbol) {
   var inst = MKT.instruments[symbol];
   var r = returnsOver(inst.c, WINDOWS);
   var missing = failingCount(inst);
-  var pill = inst.signal === "BUY"
+  var signal = view(inst).signal;
+  var pill = signal === "BUY"
     ? '<span class="pill buy">BUY</span>'
-    : inst.signal === "SELL"
+    : signal === "SELL"
       ? '<span class="pill sell">exit conditions</span>'
       : '<span class="pill">' + missing + " to go</span>";
 
@@ -777,8 +961,9 @@ function marketRow(symbol) {
 function renderMarket() {
   var buys = [], sells = [];
   Object.keys(MKT.instruments).forEach(function (s) {
-    if (MKT.instruments[s].signal === "BUY") buys.push(s);
-    else if (MKT.instruments[s].signal === "SELL") sells.push(s);
+    var sig = view(MKT.instruments[s]).signal;
+    if (sig === "BUY") buys.push(s);
+    else if (sig === "SELL") sells.push(s);
   });
 
   var head = "";
@@ -786,7 +971,8 @@ function renderMarket() {
     head = '<p class="sub" style="margin-top:0"><b>' + buys.length +
       " instrument(s) meet all seven entry conditions today.</b> That means the conditions " +
       "hold on historical data. It is not a probability of profit, not a forecast, and not " +
-      "advice &mdash; across 915 backtest trades the target was reached 21% of the time.</p>" +
+      "advice &mdash; across " + trainTrades() + " backtest trades on this setting the " +
+      "target was reached " + exitRate("take_profit") + " of the time.</p>" +
       buys.map(marketRow).join("");
   } else {
     head = '<p class="sub" style="margin:0">Nothing meets all seven conditions today. That is ' +
@@ -804,7 +990,7 @@ function renderMarket() {
     // Ranked by score: the only ordering anyone scans a list like this for is "what is
     // closest to firing".
     var sorted = r.symbols.slice().sort(function (a, b) {
-      return (MKT.instruments[b].score || 0) - (MKT.instruments[a].score || 0);
+      return (view(MKT.instruments[b]).score || 0) - (view(MKT.instruments[a]).score || 0);
     });
     return '<div class="card"><h2 style="margin-top:0">' + esc(r.name) + "</h2>" +
       '<p class="sub">' +
@@ -887,24 +1073,26 @@ function showDetail(symbol) {
         }).join("") + "</tr>"
       : "") + "</tbody></table>";
 
-  var conds = (inst.conditions || []).map(function (c) {
+  var v = view(inst);
+  var conds = (v.conditions || []).map(function (c) {
     return '<div class="cond' + (c.ok ? "" : " failing") + '">' +
       '<span class="mark ' + (c.ok ? "ok" : "no") + '">' + (c.ok ? "\u2713" : "\u2717") +
       '</span><span class="txt">' + esc(c.detail) + "</span></div>";
   }).join("");
 
   var missing = failingCount(inst);
-  var verdict = inst.signal === "BUY"
+  var verdict = v.signal === "BUY"
     ? '<span class="pill buy">all seven hold</span>'
     : '<span class="pill">' + missing + " condition" + (missing === 1 ? "" : "s") + " short</span>";
 
-  var trade = inst.levels
+  var trade = v.levels
     ? '<table class="rets"><tbody><tr><td>If entered at the last close</td><td>' +
       fmt(inst.c[inst.c.length - 1]) + "</td></tr><tr><td>Stop</td><td>" +
-      fmt(inst.levels.stop) + "</td></tr><tr><td>Target</td><td>" + fmt(inst.levels.target) +
-      "</td></tr><tr><td>Reward to risk</td><td>" + fmt(inst.levels.rr) +
+      fmt(v.levels.stop) + "</td></tr><tr><td>Target</td><td>" + fmt(v.levels.target) +
+      "</td></tr><tr><td>Reward to risk</td><td>" + fmt(v.levels.rr) +
       "x</td></tr></tbody></table>" +
-      '<p class="sub">The stop is two ATR below the close &mdash; a volatility measurement, ' +
+      '<p class="sub">The stop is ' + P().stop_atr_multiple +
+      " ATR below the close &mdash; a volatility measurement, " +
       "not a round number. Pay more than the close and the whole difference comes off that " +
       "ratio, because the levels do not follow your fill.</p>"
     : '<p class="sub">No levels could be placed from the stored history.</p>';
@@ -916,12 +1104,12 @@ function showDetail(symbol) {
       '<p class="sub">' + esc(inst.name) + " \u00b7 " + esc(inst.region) + " \u00b7 " +
       esc(inst.sector) + (inst.etf ? " \u00b7 ETF" : "") + "</p>" +
       '<div class="verdict">' + verdict + '<span class="why">Score ' +
-      (inst.score == null ? "n/a" : fmt(inst.score)) +
+      (v.score == null ? "n/a" : fmt(v.score)) +
       " &mdash; it counts conditions, not probability.</span></div>" +
       instrumentChart(inst) + "</div>" +
 
     '<div class="card"><h2 style="margin-top:0">The seven entry conditions</h2>' + conds +
-      (inst.signal === "BUY"
+      (v.signal === "BUY"
         ? '<p class="sub">All seven hold. That is what a BUY means here: the conditions are ' +
           "true on historical data. It is not a forecast, and nothing on this page says the " +
           "price will rise.</p>"
@@ -950,9 +1138,10 @@ function showDetail(symbol) {
     "</div>" +
 
     '<div class="note">Whether to buy this is not something this page will answer. It shows ' +
-    "which conditions hold, what the trade would look like, and that across 915 backtest " +
-    "trades the target was reached 21% of the time and the stop 33%. Two of every three lost " +
-    "money. The decision is yours.</div>";
+    "which conditions hold, what the trade would look like, and that across " + trainTrades() +
+    " backtest trades on the " + esc(profile().title) + " setting the target was reached " +
+    exitRate("take_profit") + " of the time and the stop " + exitRate("stop_loss") + ". " +
+    lossRate() + " lost money. The decision is yours.</div>";
 
   document.querySelectorAll(".tab").forEach(function (t) {
     t.setAttribute("aria-selected", "false");
@@ -965,19 +1154,33 @@ function showDetail(symbol) {
 }
 
 function renderLearn() {
-  var r = MKT.exit_base_rates;
+  var p = P();
   var rows = [
-    ["trend", "Trend break", "The close falls below the 50-day average.", r.trend_break, "−1.0%"],
-    ["stop", "Stop", "Price reaches the lower line, two ATR below the entry bar's close.",
-     r.stop_loss, "−3.7%"],
-    ["target", "Target", "Price reaches the upper line, three times the risk above.",
-     r.take_profit, "+10.3%"],
-    ["time", "Time", MKT.strategy.max_holding_bars + " trading sessions pass.", r.time, "+10.8%"]
+    ["trend", "Trend break", "trend_break",
+     p.exit_on_trend_break
+       ? "The close falls below the 50-day average."
+       : "Switched off in this setting, so a wobble does not close the trade."],
+    ["stop", "Stop", "stop_loss",
+     "Price reaches the lower line, " + p.stop_atr_multiple +
+     " ATR below the entry bar's close."],
+    ["target", "Target", "take_profit",
+     "Price reaches the upper line, " + p.take_profit_r_multiple +
+     " times the risk above."],
+    ["time", "Time", "max_holding_period", p.max_holding_bars + " trading sessions pass."],
+    ["trend", "RSI", "rsi_extended", "RSI closes above " + p.exit_rsi_max + "."]
   ];
+  // Sorted by how often each actually ended a trade, so the list reads in the order a
+  // position is most likely to meet them.
+  var stats = exitStats();
+  rows.sort(function (a, b) {
+    return ((stats[b[2]] || {}).share_pct || 0) - ((stats[a[2]] || {}).share_pct || 0);
+  });
   document.getElementById("exits-learn").innerHTML = rows.map(function (x) {
+    var s = stats[x[2]];
     return '<tr><td><span class="dot ' + x[0] + '"></span><b>' + x[1] + "</b></td>" +
-      "<td>" + x[2] + '</td><td class="n tnum">' + fmt(x[3] * 100, 1) + "%</td>" +
-      '<td class="n faint">median ' + x[4] + "</td></tr>";
+      "<td>" + x[3] + '</td><td class="n tnum">' + (s ? fmt(s.share_pct, 1) + "%" : "—") +
+      '</td><td class="n faint">' + (s ? "median " + pct(s.median_pnl_pct) : "never") +
+      "</td></tr>";
   }).join("");
 }
 
@@ -1133,6 +1336,7 @@ fetch("market.json?v=" + Date.now())
     });
 
     wireForm();
+    renderRisk();
     renderPositions();
     renderMarket();
     renderLearn();

@@ -32,7 +32,8 @@ TOP_LEVEL = {
     "turnover_window",
     "liquidity_threshold",
     "strategy",
-    "exit_base_rates",
+    "profiles",
+    "evidence",
     "fx",
     "regions",
     "instruments",
@@ -40,8 +41,7 @@ TOP_LEVEL = {
 }
 
 PER_INSTRUMENT = {
-    "conditions",
-    "levels",
+    "by_profile",
     "ema200",
     "rsi",
     "macd_hist",
@@ -56,9 +56,6 @@ PER_INSTRUMENT = {
     "thin",
     "liquidity_caveat",
     "notes",
-    "signal",
-    "score",
-    "reasons",
     "d",
     "h",
     "l",
