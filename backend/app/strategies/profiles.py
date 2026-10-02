@@ -61,9 +61,17 @@ class RiskProfile:
     name: str
     title: str
     summary: str
-    """One sentence a reader sees next to the name. States the trade-off, not a verdict."""
+    """One sentence next to the name, for the command line. States the trade-off, not a
+    verdict -- which of these is "better" is not something this project knows."""
 
     overrides: dict[str, Any]
+
+    title_es: str = ""
+    summary_es: str = ""
+    """The same, for the published page, which is read in Spanish.
+
+    The fingerprint covers parameters, not prose, so rewording either of these does not
+    invalidate a measurement."""
 
     def params_for(self, defaults: dict[str, Any]) -> dict[str, Any]:
         unknown = sorted(set(self.overrides) - set(defaults))
@@ -83,6 +91,12 @@ RISK_PROFILES: tuple[RiskProfile, ...] = (
             "Closes a position as soon as the trend wobbles. The most common ending, and "
             "usually a small loss. Smallest drawdowns of the three; also the smallest wins."
         ),
+        title_es="Tranquilo",
+        summary_es=(
+            "Cierra la posición apenas la tendencia flaquea. Es el final más común y suele "
+            "ser una pérdida chica. Las caídas más suaves de las tres, y también las "
+            "ganancias más chicas."
+        ),
         overrides={},
     ),
     RiskProfile(
@@ -91,6 +105,12 @@ RISK_PROFILES: tuple[RiskProfile, ...] = (
         summary=(
             "No trend-break exit, so a trade runs to its stop or its target. A wider stop "
             "and a further target: fewer, larger outcomes in both directions."
+        ),
+        title_es="Audaz",
+        summary_es=(
+            "Sin salida por quiebre de tendencia: la operación corre hasta el stop o hasta "
+            "el objetivo. Stop más lejos y objetivo más lejos, o sea menos resultados y más "
+            "grandes, para los dos lados."
         ),
         overrides={
             "exit_on_trend_break": False,
@@ -105,6 +125,12 @@ RISK_PROFILES: tuple[RiskProfile, ...] = (
         summary=(
             "Every lever at once: no trend break, a three-ATR stop, a 5R target, weaker "
             "entry conditions and only instruments that move. The widest tails on both sides."
+        ),
+        title_es="Agresivo",
+        summary_es=(
+            "Todas las palancas a la vez: sin quiebre de tendencia, stop a tres ATR, "
+            "objetivo a 5R, condiciones de entrada más sueltas y solo instrumentos que se "
+            "mueven. Las colas más anchas para los dos lados."
         ),
         overrides={
             "exit_on_trend_break": False,

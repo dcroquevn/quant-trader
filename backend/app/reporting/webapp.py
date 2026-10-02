@@ -196,9 +196,11 @@ def build_market_payload(
                 if hasattr(decision.action, "value")
                 else str(decision.action),
                 "score": round(decision.score, 2),
+                # The name and the verdict. The measured value is already a flat field,
+                # and the threshold travels in `params`, so the page can write the sentence
+                # itself -- in whatever language it is read in.
                 "conditions": [
-                    {"name": c.name, "ok": bool(c.passed), "detail": c.detail}
-                    for c in decision.components
+                    {"name": c.name, "ok": bool(c.passed)} for c in decision.components
                 ],
                 "levels": levels,
             }
@@ -216,6 +218,7 @@ def build_market_payload(
             "macd_hist": feature("macd_hist"),
             "rel_volume": feature("relative_volume_20"),
             "atr_pct": feature("atr_pct_14"),
+            "roc": feature(f"roc_{params.get('roc_period', 20)}"),
             "from_high": feature("dist_52w_high_pct"),
             "name": spec.name,
             "region": spec.region,
@@ -223,8 +226,7 @@ def build_market_payload(
             "etf": spec.asset_class == "etf",
             "turnover": spec.median_turnover_usd,
             "thin": spec.is_thinly_traded,
-            "liquidity_caveat": spec.liquidity_caveat,
-            "notes": spec.notes,
+            "notes": spec.notes_es or spec.notes,
             "d": series.dates,
             "h": series.high,
             "l": series.low,
@@ -256,18 +258,32 @@ def build_market_payload(
     profiles = [
         {
             "name": profile.name,
-            "title": profile.title,
-            "summary": profile.summary,
+            "title": profile.title_es or profile.title,
+            "summary": profile.summary_es or profile.summary,
             # Every parameter the browser needs to recompute levels and walk the exits. Not
             # the whole set: the entry conditions are evaluated here, server-side.
             "params": {
                 key: resolved[profile.name].get(key)
                 for key in (
+                    # Exits, which the browser recomputes.
                     "stop_atr_multiple",
                     "take_profit_r_multiple",
                     "max_holding_bars",
                     "exit_on_trend_break",
                     "exit_rsi_max",
+                    # Entry thresholds, which the browser only describes. Published so the
+                    # page can say what a condition was measured against instead of
+                    # repeating a number that lives in Python.
+                    "require_price_above_ema200",
+                    "require_ema50_above_ema200",
+                    "rsi_min",
+                    "rsi_max",
+                    "require_macd_positive",
+                    "roc_period",
+                    "min_roc_pct",
+                    "min_relative_volume",
+                    "min_atr_pct",
+                    "max_atr_pct",
                 )
             },
             "changes": profile.overrides,

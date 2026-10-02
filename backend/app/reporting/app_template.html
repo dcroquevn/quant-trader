@@ -194,21 +194,21 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
 <header>
   <div>
     <h1>quant-trader</h1>
-    <div class="sub" id="asof">loading…</div>
+    <div class="sub" id="asof">cargando…</div>
   </div>
   <div class="stamp" id="stamp"></div>
 </header>
 
-<div id="boot" class="card">Loading market data…</div>
+<div id="boot" class="card">Cargando datos de mercado…</div>
 
 <main id="app" class="hidden">
 
   <div id="riskbar"></div>
 
   <div class="tabs" role="tablist">
-    <button class="tab" role="tab" aria-selected="true" data-view="positions">Your positions</button>
-    <button class="tab" role="tab" aria-selected="false" data-view="market">Market</button>
-    <button class="tab" role="tab" aria-selected="false" data-view="learn">How it works</button>
+    <button class="tab" role="tab" aria-selected="true" data-view="positions">Lo que tengo</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="market">Mercado</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="learn">Cómo funciona</button>
   </div>
 
   <!-- ============================ POSITIONS ============================ -->
@@ -216,22 +216,23 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
     <div id="positions"></div>
 
     <div class="card">
-      <h2 style="margin-top:0">Record a purchase</h2>
-      <p class="sub">What you bought, and what you actually paid. This stays on this phone —
-      it is never sent anywhere, because there is nowhere to send it.</p>
+      <h2 style="margin-top:0">Registrar una compra</h2>
+      <p class="sub">Qué compraste y cuánto pagaste de verdad. Esto se queda en este teléfono
+      — no se envía a ninguna parte, porque no hay a dónde enviarlo.</p>
 
       <div class="field">
-        <label for="f-symbol">Which instrument</label>
+        <label for="f-symbol">Qué instrumento</label>
         <select id="f-symbol"></select>
       </div>
 
       <div class="row">
         <div class="field">
-          <label for="f-amount">Amount you spent</label>
-          <input id="f-amount" type="number" inputmode="decimal" step="0.01" placeholder="20.36">
+          <label for="f-amount">Cuánto gastaste</label>
+          <input id="f-amount" type="text" inputmode="decimal" placeholder="20,36"
+                 autocomplete="off">
         </div>
         <div class="field">
-          <label for="f-currency">Currency</label>
+          <label for="f-currency">Moneda</label>
           <select id="f-currency">
             <option value="USD">USD</option>
             <option value="CLP">CLP</option>
@@ -240,38 +241,42 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
       </div>
 
       <div class="field">
-        <label for="f-price">Price per share — the one Fintual shows you</label>
-        <input id="f-price" type="number" inputmode="decimal" step="0.01" placeholder="351.44">
-        <div class="hint">Use Fintual's number, not the one on this page. Fintual fills during
-        the session; the prices here are the previous close. On 2026-10-01 that difference was
-        2.1% on GOOGL, which took the setup from 3.0x reward-to-risk to 1.8x.</div>
+        <label for="f-price">Precio por acción — el que te muestra Fintual</label>
+        <input id="f-price" type="text" inputmode="decimal" placeholder="351,44"
+               autocomplete="off">
+        <div class="hint">Usa el número de Fintual, no el de esta página. Fintual compra
+        durante la sesión; los precios de acá son el cierre anterior. El 2026-10-01 esa
+        diferencia fue de 2,1% en GOOGL, y llevó la operación de 3,0x de beneficio-riesgo a
+        1,8x.</div>
       </div>
 
       <div class="row">
         <div class="field">
-          <label for="f-date">Date</label>
+          <label for="f-date">Fecha</label>
           <input id="f-date" type="date">
         </div>
         <div class="field">
-          <label for="f-fees">Fees (optional)</label>
-          <input id="f-fees" type="number" inputmode="decimal" step="0.01" placeholder="0">
+          <label for="f-fees">Comisión (opcional)</label>
+          <input id="f-fees" type="text" inputmode="decimal" placeholder="0"
+                 autocomplete="off">
         </div>
       </div>
 
-      <button class="btn primary" id="f-save">Record it</button>
+      <button class="btn primary" id="f-save">Registrar</button>
       <p class="err hidden" id="f-error"></p>
-      <p class="sub" style="margin-top:12px">This records what you did. It does not buy
-      anything and cannot: there is no broker connection in this project.</p>
+      <p class="sub" style="margin-top:12px">Esto anota lo que hiciste. No compra nada y no
+      puede hacerlo: este proyecto no tiene conexión con ningún corredor.</p>
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0">Keep a copy</h2>
-      <p class="sub">These live only in this browser. Clearing site data, a private window, or
-      a different device means they are gone. Export now and keep the file somewhere.</p>
+      <h2 style="margin-top:0">Guarda una copia</h2>
+      <p class="sub">Esto vive solo en este navegador. Si borras los datos del sitio, usas una
+      ventana privada o cambias de equipo, se pierde. Exporta ahora y guarda el archivo en
+      alguna parte.</p>
       <div class="actions">
-        <button class="btn small" id="f-export">Export</button>
-        <button class="btn small" id="f-import">Import</button>
-        <button class="btn small danger" id="f-clear">Delete all</button>
+        <button class="btn small" id="f-export">Exportar</button>
+        <button class="btn small" id="f-import">Importar</button>
+        <button class="btn small danger" id="f-clear">Borrar todo</button>
       </div>
       <input type="file" id="f-file" accept="application/json" class="hidden">
     </div>
@@ -280,78 +285,74 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
   <!-- ============================= MARKET ============================== -->
   <section id="view-market" class="hidden">
     <div class="card">
-      <h2 style="margin-top:0">Entry conditions today</h2>
+      <h2 style="margin-top:0">Condiciones de entrada hoy</h2>
       <div id="signals"></div>
     </div>
-    <p class="sub">Ranked by how many of the seven entry conditions hold. Tap any instrument
-    for its chart, which conditions are failing, and how it has done.</p>
+    <p class="sub">Cada instrumento dice <b>COMPRAR</b> o <b>ESPERAR</b> según cuántas de las
+    siete condiciones de entrada se cumplen hoy. Toca cualquiera para ver su gráfico, qué
+    condición está fallando y cómo le ha ido.</p>
     <div id="regions"></div>
   </section>
 
   <!-- ============================= DETAIL =============================== -->
   <section id="view-detail" class="hidden">
-    <button class="btn small" id="d-back" style="margin-bottom:14px">&larr; Back</button>
+    <button class="btn small" id="d-back" style="margin-bottom:14px">&larr; Volver</button>
     <div id="detail"></div>
   </section>
 
   <!-- ============================== LEARN ============================== -->
   <section id="view-learn" class="hidden">
     <div class="card">
-      <h2 style="margin-top:0">What HOLD and SELL mean here</h2>
-      <p class="sub"><b>HOLD</b> means none of the strategy's four exit rules has been met.
-      <b>SELL</b> means one has. Neither is advice, and neither is a forecast — they are what a
-      set of rules says about a price series.</p>
-      <p class="sub">The rules were chosen before you bought anything, which is the point of
-      having them: the decision gets made when you are not holding the position.</p>
+      <h2 style="margin-top:0">Qué significan MANTENER y VENDER</h2>
+      <p class="sub"><b>MANTENER</b> quiere decir que no se ha cumplido ninguna de las reglas
+      de salida. <b>VENDER</b> quiere decir que se cumplió una. Ninguna de las dos es un
+      consejo ni un pronóstico: son lo que un conjunto de reglas dice sobre una serie de
+      precios.</p>
+      <p class="sub">Las reglas se eligieron antes de que compraras nada, y ese es justamente
+      el punto: la decisión se toma cuando no tienes la posición encima.</p>
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0">The four ways a position ends</h2>
+      <h2 style="margin-top:0">Cómo termina una posición</h2>
       <table class="rules"><tbody id="exits-learn"></tbody></table>
-      <p class="sub" style="margin-top:12px"><b>The target is not a prediction.</b> It does not
-      mark where the price is expected to turn. It is three times what you risked, fixed in
-      advance so taking a profit is decided before there is a profit to feel anything about.
-      Four times out of five the price never reached it.</p>
-      <p class="sub">Notice which row is largest. The trend break ends more positions than the
-      stop and the target together, and it is the one without a fixed level — it moves.</p>
+      <p class="sub" style="margin-top:12px"><b>El objetivo no es una predicción.</b> No marca
+      dónde se espera que el precio dé vuelta. Es un múltiplo fijo de lo que arriesgaste,
+      definido de antemano para que tomar la ganancia se decida antes de que haya una ganancia
+      que te haga sentir algo.</p>
+      <p class="sub">Fíjate cuál fila es la más grande: esa es la forma en que esta
+      configuración termina la mayoría de sus operaciones.</p>
     </div>
 
     <div class="card">
-      <h2 style="margin-top:0">What it looks for before entering</h2>
-      <p class="sub">Seven conditions, all at once. A score of 1.00 means seven of seven held.
-      It counts conditions; it is not a probability of anything.</p>
-      <table class="rules"><tbody>
-        <tr><td>Price above the 200-day average</td><td class="n faint">long trend up</td></tr>
-        <tr><td>50-day above the 200-day</td><td class="n faint">short trend agrees</td></tr>
-        <tr><td>RSI between 40 and 70</td><td class="n faint">neither panic nor euphoria</td></tr>
-        <tr><td>MACD histogram positive</td><td class="n faint">momentum with it</td></tr>
-        <tr><td>20-session return above zero</td><td class="n faint">up over the month</td></tr>
-        <tr><td>Volume above 1.2× normal</td><td class="n faint">someone is interested</td></tr>
-        <tr><td>Volatility inside a band</td><td class="n faint">sizeable, not wild</td></tr>
-      </tbody></table>
+      <h2 style="margin-top:0">Qué busca antes de entrar</h2>
+      <p class="sub">Siete condiciones, todas a la vez. Un puntaje de 1,00 significa que se
+      cumplieron las siete. Cuenta condiciones; no es la probabilidad de nada.</p>
+      <table class="rules"><tbody id="entry-learn"></tbody></table>
     </div>
 
     <div class="note">
-      <b>None of this establishes that the strategy works.</b> Two of every three backtest
-      trades lost money. What carried the sample was a small number of winners held for more
-      than a month — which a few trades a year cannot reproduce. Every figure describes one
-      historical sample, and a pattern repeating is an assumption, not a finding.
+      <b>Nada de esto demuestra que la estrategia funcione.</b> Dos de cada tres operaciones
+      del backtest perdieron plata. Lo que sostuvo la muestra fue un grupo pequeño de ganadoras
+      mantenidas más de un mes, y eso unas pocas operaciones al año no lo reproducen. Cada
+      cifra describe una muestra histórica, y que un patrón se repita es un supuesto, no un
+      hallazgo.
     </div>
 
     <div class="info">
-      <b>Your positions never leave this phone.</b> They are in this browser's storage. This
-      page is served from a public repository, so anything it carried would be public — it
-      carries prices, and the arithmetic about your money happens here.
+      <b>Tus posiciones nunca salen de este teléfono.</b> Están en el almacenamiento de este
+      navegador. Esta página se sirve desde un repositorio público, así que cualquier cosa que
+      llevara sería pública: lleva precios, y la aritmética sobre tu plata ocurre acá.
     </div>
   </section>
 
 </main>
 
 <footer>
-  No part of this system places orders, and live trading is not implemented. Prices come from
-  free providers with no service guarantee and are previous closes, not live quotes. Every
-  instrument is US-listed and priced in USD — the Chilean and Asian ones are ADRs and country
-  ETFs, so a return carries the currency move as well.
+  Ninguna parte de este sistema envía órdenes, y la operación en vivo no está implementada.
+  Los precios vienen de proveedores gratuitos sin garantía de servicio y son cierres
+  anteriores, no cotizaciones en vivo. Todos los instrumentos están listados en Estados Unidos
+  y valorizados en USD — los chilenos y asiáticos son ADR y ETF de país, así que el retorno
+  incluye también el movimiento de la moneda.
 </footer>
 </div>
 
@@ -434,16 +435,16 @@ function levelsFor(inst, entryISO) {
 
 function evaluate(pos) {
   var inst = MKT.instruments[pos.symbol];
-  if (!inst) return { verdict: "UNKNOWN", why: "No market data for " + pos.symbol + "." };
+  if (!inst) return { verdict: "UNKNOWN", why: "No hay datos de mercado para " + pos.symbol + "." };
 
   var lv = pos.stop && pos.target
     ? { stop: pos.stop, target: pos.target, index: indexOnOrAfter(inst.d, pos.date) }
     : levelsFor(inst, pos.date);
-  if (!lv) return { verdict: "UNKNOWN", why: "Not enough history to place the levels." };
+  if (!lv) return { verdict: "UNKNOWN", why: "No hay historial suficiente para fijar los niveles." };
 
   var start = indexOnOrAfter(inst.d, pos.date);
   if (start === -1) {
-    return { verdict: "UNKNOWN", why: "No stored session on or after " + pos.date + " yet." };
+    return { verdict: "UNKNOWN", why: "Todavía no hay una sesión guardada del " + pos.date + " en adelante." };
   }
 
   var last = inst.c.length - 1;
@@ -477,10 +478,10 @@ function evaluate(pos) {
     out.verdict = "SELL";
     out.fired = fired;
     out.why = {
-      stop: "The stop at " + fmt(lv.stop) + " was reached on " + fired.at + ".",
-      target: "The target at " + fmt(lv.target) + " was reached on " + fired.at + ".",
-      trend: "The close fell under the 50-day average on " + fired.at + ".",
-      time: "It passed " + P().max_holding_bars + " sessions."
+      stop: "El stop en " + fmt(lv.stop) + " se alcanzó el " + fired.at + ".",
+      target: "El objetivo en " + fmt(lv.target) + " se alcanzó el " + fired.at + ".",
+      trend: "El cierre quedó bajo el promedio de 50 días el " + fired.at + ".",
+      time: "Pasaron " + P().max_holding_bars + " sesiones."
     }[fired.rule];
     return out;
   }
@@ -490,16 +491,17 @@ function evaluate(pos) {
   if (P().exit_on_trend_break && ema != null && lastClose < ema) {
     out.verdict = "SELL";
     out.pending = true;
-    out.why = "Today's close " + fmt(lastClose) + " is under the 50-day average " + fmt(ema) +
-              ". The rule acts on the next session's open.";
+    out.why = "El cierre de hoy " + fmt(lastClose) + " está bajo el promedio de 50 días " +
+              fmt(ema) + ". La regla actúa en la apertura de la próxima sesión.";
     return out;
   }
 
   out.verdict = "HOLD";
   out.why = P().exit_on_trend_break
-    ? "None of the four exit rules has been met."
-    : "Neither the stop, the target nor the time limit has been reached. This setting has "
-      + "no trend-break exit, so a wobble does not close it.";
+    ? "No se ha cumplido ninguna de las reglas de salida."
+    : "No se ha alcanzado el stop, ni el objetivo, ni el limite de tiempo. Esta "
+      + "configuración no tiene salida por quiebre de tendencia, así que un bandazo no "
+      + "la cierra.";
   return out;
 }
 
@@ -525,6 +527,62 @@ function big(n) {
   }
   return fmt(n, 0);
 }
+/* A number as typed on a Spanish phone. `type="number"` was rejecting "20,36" against the
+   browser's locale, which left the field looking filled and reading as empty. */
+function parseAmount(text) {
+  if (text == null) return NaN;
+  var s = String(text).trim().replace(/\s/g, "");
+  if (!s) return NaN;
+  var comma = s.lastIndexOf(","), dot = s.lastIndexOf(".");
+  if (comma > -1 && dot > -1) {
+    // Both present: whichever comes last is the decimal mark, the other groups thousands.
+    s = comma > dot ? s.replace(/\./g, "").replace(",", ".") : s.replace(/,/g, "");
+  } else if (comma > -1 || dot > -1) {
+    // One kind of separator, used once, with exactly three digits after it: that is a
+    // thousands group, not a decimal. "50.000" in pesos is fifty thousand, and reading it
+    // as fifty would be the worst possible way to be wrong about an amount. The reader is
+    // shown the interpretation under the field, so an unusual case is visible rather than
+    // silent.
+    var mark = comma > -1 ? "," : ".";
+    var parts = s.split(mark);
+    s = parts.length === 2 && parts[1].length !== 3
+      ? parts[0] + "." + parts[1]
+      : parts.join("");
+  }
+  var n = parseFloat(s);
+  return isNaN(n) ? NaN : n;
+}
+
+var REGION_ES = {
+  "United States": "Estados Unidos",
+  "Chile": "Chile",
+  "Emerging Asia": "Asia emergente"
+};
+var SECTOR_ES = {
+  "Broad Market": "Mercado amplio",
+  "Communication Services": "Servicios de comunicación",
+  "Consumer Discretionary": "Consumo discrecional",
+  "Consumer Staples": "Consumo básico",
+  "Financials": "Financiero",
+  "Materials": "Materiales",
+  "Semiconductors": "Semiconductores",
+  "Small Cap": "Baja capitalización",
+  "Technology": "Tecnología",
+  "Utilities": "Servicios básicos"
+};
+function es(map, value) { return map[value] || value; }
+
+/* The liquidity caveat, composed here from the two numbers rather than shipped as a
+   paragraph: the measurement is the fact, the wording is the page's job. */
+function liquidityNote(inst) {
+  if (!inst.thin || !inst.turnover) return "";
+  return "Se transan unos " + big(inst.turnover) + " USD al día (mediana, " +
+    esc(MKT.turnover_window) + "), bajo el umbral de " + big(MKT.liquidity_threshold) +
+    " con el que este proyecto marca un instrumento como poco líquido. El backtest no " +
+    "modela impacto de mercado, así que una posición grande movería el precio de una " +
+    "forma que ninguna cifra de aqui captura.";
+}
+
 function esc(s) {
   return String(s).replace(/[&<>"]/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -568,13 +626,13 @@ function chart(pos, ev) {
          '<line x1="' + pl + '" y1="' + yt.toFixed(1) + '" x2="' + (pl + pw) + '" y2="' +
          yt.toFixed(1) + '" stroke="#26d98a" stroke-width="1" stroke-dasharray="4 3"/>' +
          '<text x="' + (pl + pw + 5) + '" y="' + (yt + 3).toFixed(1) +
-         '" class="lbl" fill="#26d98a">target ' + fmt(ev.levels.target, 0) + '</text>';
+         '" class="lbl" fill="#26d98a">objetivo ' + fmt(ev.levels.target, 0) + '</text>';
   }
 
   var ye = Y(pos.price);
   s += '<line x1="' + pl + '" y1="' + ye.toFixed(1) + '" x2="' + (pl + pw) + '" y2="' +
        ye.toFixed(1) + '" stroke="#8a94a8" stroke-width="1"/>' +
-       '<text x="' + (pl + pw + 5) + '" y="' + (ye + 3).toFixed(1) + '" class="lbl">you ' +
+       '<text x="' + (pl + pw + 5) + '" y="' + (ye + 3).toFixed(1) + '" class="lbl">pagaste ' +
        fmt(pos.price, 0) + '</text>';
 
   var ep = [];
@@ -612,8 +670,8 @@ function chart(pos, ev) {
             '" y="' + pt + '" width="' + slot.toFixed(1) + '" height="' + ph + '" fill="transparent"/>';
   }
 
-  return '<div class="readout" data-default="Touch the chart to read a date">' +
-         'Touch the chart to read a date</div>' +
+  return '<div class="readout" data-default="Toca el gráfico para ver una fecha">' +
+         'Toca el gráfico para ver una fecha</div>' +
          '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(pos.symbol) +
          ' with your entry, stop and target">' +
          '<line x1="' + pl + '" y1="' + (H - pb) + '" x2="' + (pl + pw) + '" y2="' + (H - pb) +
@@ -636,6 +694,36 @@ function chart(pos, ev) {
  * TRAIN rather than VALIDATION: it is the larger sample, and it is the one the rules were
  * built against. Both are on the page above, and they disagree -- which is the point.
  * ------------------------------------------------------------------ */
+/* One sentence per condition, built from the instrument's own numbers and the selected
+   profile's thresholds. The payload carries neither sentence: it carries what was measured
+   and what it was measured against, which is the same in every language. */
+function conditionText(inst, name) {
+  var p = P(), last = inst.c[inst.c.length - 1], ema50 = inst.e[inst.e.length - 1];
+  switch (name) {
+    case "trend_price_above_ema200":
+      return "Precio " + fmt(last) + " contra el promedio de 200 días " + fmt(inst.ema200);
+    case "trend_ema50_above_ema200":
+      return "Promedio de 50 días " + fmt(ema50) + " contra el de 200 días " +
+             fmt(inst.ema200);
+    case "momentum_rsi_band":
+      return "RSI " + fmt(inst.rsi, 1) + ", la banda pedida es " + fmt(p.rsi_min, 0) +
+             " a " + fmt(p.rsi_max, 0);
+    case "momentum_macd_positive":
+      return "Histograma MACD " + fmt(inst.macd_hist, 4) + ", se pide positivo";
+    case "momentum_roc":
+      return "Retorno de " + p.roc_period + " sesiones " + pct(inst.roc) +
+             ", se pide sobre " + pct(p.min_roc_pct);
+    case "volume_relative":
+      return "Volumen " + fmt(inst.rel_volume) + "x lo normal, se pide " +
+             fmt(p.min_relative_volume) + "x";
+    case "volatility_band":
+      return "Volatilidad (ATR) " + fmt(inst.atr_pct) + "% del precio, la banda pedida es " +
+             fmt(p.min_atr_pct) + "% a " + fmt(p.max_atr_pct) + "%";
+    default:
+      return name;
+  }
+}
+
 function exitStats() {
   return (((profile().evidence || {}).train) || {}).exits || {};
 }
@@ -644,9 +732,10 @@ function holdingNote() {
   // is what the strategy is trying to produce, and it widens with the risk dial.
   var h = (((profile().evidence || {}).train) || {}).holding || {};
   if (h.winner_sessions == null || h.loser_sessions == null) return "";
-  return '<p class="sub">Doing nothing is the default. On this setting the median winner ' +
-    "took " + fmt(h.winner_sessions, 0) + " sessions to get there and the median loser was " +
-    "out in " + fmt(h.loser_sessions, 0) + ".</p>";
+  return '<p class="sub">No hacer nada es lo que corresponde por defecto. Con esta ' +
+    "configuración la ganadora mediana tardó " + fmt(h.winner_sessions, 0) +
+    " sesiones en llegar y la perdedora mediana salió en " + fmt(h.loser_sessions, 0) +
+    ".</p>";
 }
 function trainTrades() {
   var n = (((profile().evidence || {}).train) || {}).n_trades;
@@ -692,33 +781,34 @@ function rulesTable(pos, ev) {
     var move = (level / last - 1) * 100;
     var crossed = dir === "below" ? last <= level : last >= level;
     return crossed
-      ? '<span class="met">already</span>'
+      ? '<span class="met">ya</span>'
       : '<span class="tnum">' + (move > 0 ? "+" : "") + fmt(move, 1) + "%</span>";
   }
 
   rows.push(['<span class="dot stop"></span>Stop', fmt(ev.levels.stop),
              dist(ev.levels.stop, "below"),
-             "A fall of this much closes it at a loss. Ended " + exitRate("stop_loss") +
-             " of trades, median " + exitMedian("stop_loss") + "."]);
-  rows.push(['<span class="dot target"></span>Target', fmt(ev.levels.target),
+             "Una caída de esto la cierra con pérdida. Terminó " + exitRate("stop_loss") +
+             " de las operaciones, mediana " + exitMedian("stop_loss") + "."]);
+  rows.push(['<span class="dot target"></span>Objetivo', fmt(ev.levels.target),
              dist(ev.levels.target, "above"),
-             "A rise of this much closes it at a profit. Ended " + exitRate("take_profit") +
-             " of trades, median " + exitMedian("take_profit") + "."]);
+             "Una subida de esto la cierra con ganancia. Terminó " + exitRate("take_profit") +
+             " de las operaciones, mediana " + exitMedian("take_profit") + "."]);
   if (P().exit_on_trend_break) {
-    rows.push(['<span class="dot trend"></span>Trend break',
-               ev.ema != null ? fmt(ev.ema) : "moving",
+    rows.push(['<span class="dot trend"></span>Quiebre de tendencia',
+               ev.ema != null ? fmt(ev.ema) : "se mueve",
                ev.ema != null ? dist(ev.ema, "below") : "—",
-               "The close under the 50-day average. Ended " + exitRate("trend_break") +
-               " of trades, median " + exitMedian("trend_break") + "."]);
+               "El cierre bajo el promedio de 50 días. Terminó " + exitRate("trend_break") +
+               " de las operaciones, mediana " + exitMedian("trend_break") + "."]);
   } else {
-    rows.push(['<span class="dot trend"></span>Trend break', "off",
+    rows.push(['<span class="dot trend"></span>Quiebre de tendencia', "apagado",
                '<span class="faint">—</span>',
-               "This setting ignores it, so the trade runs to the stop or the target."]);
+               "Esta configuración no lo usa, así que la operación corre hasta el stop o el "
+               + "objetivo."]);
   }
-  rows.push(['<span class="dot time"></span>Time', P().max_holding_bars + " sessions",
-             '<span class="tnum">' + ev.held + " in</span>",
-             "Sessions, not calendar days. Ended " + exitRate("max_holding_period") +
-             " of trades, median " + exitMedian("max_holding_period") + "."]);
+  rows.push(['<span class="dot time"></span>Tiempo', P().max_holding_bars + " sesiones",
+             '<span class="tnum">' + ev.held + " van</span>",
+             "Sesiones, no días corridos. Terminó " + exitRate("max_holding_period") +
+             " de las operaciones, mediana " + exitMedian("max_holding_period") + "."]);
 
   return '<table class="rules"><tbody>' + rows.map(function (r) {
     return "<tr><td>" + r[0] + '</td><td class="n tnum">' + r[1] + '</td><td class="n">' +
@@ -738,9 +828,10 @@ function evidenceTable(split) {
   }).join("");
 
   var w = (MKT.evidence.windows || {})[split] || {};
-  return '<table class="evd"><thead><tr><th>' + esc(split) +
-    " " + esc(w.start || "") + " to " + esc(w.end || "") +
-    "</th><th>trades</th><th>a year</th><th>worst fall</th><th>profit factor</th>" +
+  var title = split === "train" ? "Periodo 1" : "Periodo 2";
+  return '<table class="evd"><thead><tr><th>' + title +
+    " · " + esc(w.start || "") + " a " + esc(w.end || "") +
+    "</th><th>oper.</th><th>al año</th><th>peor caída</th><th>factor</th>" +
     "</tr></thead><tbody>" + rows + "</tbody></table>";
 }
 
@@ -752,7 +843,7 @@ function renderRisk() {
     var v = ((p.evidence || {}).validation || {});
     return '<button data-prof="' + esc(p.name) + '" aria-pressed="' +
       (p.name === current ? "true" : "false") + '">' + esc(p.title) +
-      "<span>worst fall " + pct(v.max_drawdown_pct) + "</span></button>";
+      "<span>peor caída " + pct(v.max_drawdown_pct) + "</span></button>";
   }).join("");
 
   var chosen = profile();
@@ -764,23 +855,23 @@ function renderRisk() {
     body +=
       evidenceTable("train") +
       evidenceTable("validation") +
-      '<p class="sub">Measured on ' + esc(MKT.evidence.measured_on) + " over " +
-      MKT.evidence.universe_size + " instruments, with the same costs, the same bet size " +
-      "and the same universe for all three &mdash; so a difference between rows is a " +
-      "difference in rules, not in how much was staked. The 2024&ndash;2026 data is held " +
-      "back and was not read." +
-      "</p>" +
-      '<div class="note">Read the two tables together. The first period was mostly a ' +
-      "rising market and the riskier settings earned more in it; the second was not, and " +
-      "they lost money while falling further. That is the shape of the choice: more risk " +
-      "bought more of whatever the market was doing, in both directions. Nothing here says " +
-      "which period the next two years will resemble.</div>";
+      '<p class="sub">Medido el ' + esc(MKT.evidence.measured_on) + " sobre " +
+      MKT.evidence.universe_size + " instrumentos, con los mismos costos, el mismo tamaño " +
+      "de apuesta y el mismo universo para las tres &mdash; así que una diferencia entre " +
+      "filas es una diferencia de reglas, no de cuánto se apostó. Los datos de " +
+      "2024&ndash;2026 quedaron reservados y no se leyeron.</p>" +
+      '<div class="note">Hay que leer las dos tablas juntas. El primer período fue sobre ' +
+      "todo un mercado al alza y las configuraciones más riesgosas ganaron más en " +
+      "él; el segundo no lo fue, y perdieron plata cayendo más hondo. Esa es la " +
+      "forma de la decisión: más riesgo compró más de lo que el mercado " +
+      "estuviera haciendo, en las dos direcciones. Nada acá dice a cuál de los dos " +
+      "períodos se van a parecer los próximos dos años.</div>";
   } else {
     body += '<div class="note">' + esc(MKT.evidence.reason) + "</div>";
   }
 
   var host = document.getElementById("riskbar");
-  host.innerHTML = '<div class="card"><h2 style="margin-top:0">How much risk</h2>' +
+  host.innerHTML = '<div class="card"><h2 style="margin-top:0">Cuánto riesgo</h2>' +
     body + "</div>";
 
   host.querySelectorAll("[data-prof]").forEach(function (b) {
@@ -803,15 +894,17 @@ function renderPositions() {
   var host = document.getElementById("positions");
 
   if (!list.length) {
-    host.innerHTML = '<div class="card"><p class="sub" style="margin:0">Nothing recorded yet. ' +
-      "Buy through Fintual, then record it below — the verdict needs to know what you own, and " +
-      "only this phone will.</p></div>";
+    host.innerHTML = '<div class="card"><p class="sub" style="margin:0">Todavía no hay ' +
+      "nada registrado. Compra por Fintual y después anótalo aquí abajo: para " +
+      "dar un veredicto hay que saber qué tienes, y eso solo lo va a saber este " +
+      "teléfono.</p></div>";
     return;
   }
 
   host.innerHTML = list.map(function (pos, idx) {
     var ev = evaluate(pos);
     var cls = ev.verdict === "HOLD" ? "hold" : ev.verdict === "SELL" ? "sell" : "unknown";
+    var label = {HOLD: "MANTENER", SELL: "VENDER", UNKNOWN: "SIN DATOS"}[ev.verdict];
     var pnl = ev.pnlPct != null && !isNaN(ev.pnlPct) ? ev.pnlPct : null;
 
     return '<div class="card">' +
@@ -819,27 +912,27 @@ function renderPositions() {
       (pnl != null ? '<span class="pnl ' + (pnl >= 0 ? "up" : "down") + '">' + pct(pnl) +
        "</span>" : "") + "</div>" +
       '<div class="sub">' + esc(MKT.instruments[pos.symbol] ? MKT.instruments[pos.symbol].name
-        : "") + " · since " + esc(pos.date) + "</div>" +
-      '<div class="verdict"><span class="badge ' + cls + '">' + ev.verdict + "</span>" +
+        : "") + " · desde el " + esc(pos.date) + "</div>" +
+      '<div class="verdict"><span class="badge ' + cls + '">' + label + "</span>" +
       '<span class="why">' + esc(ev.why || "") + "</span></div>" +
       strategyLine(pos.symbol) +
       chart(pos, ev) +
       '<div class="stats">' +
-        stat("You paid", fmt(pos.price)) +
-        stat("Shares", fmt(pos.shares, 6)) +
-        stat("Put in", fmt(pos.amount) + " " + pos.currency) +
-        stat("Worth now", ev.value != null ? fmt(ev.value) + " USD" : "n/a") +
+        stat("Pagaste", fmt(pos.price)) +
+        stat("Acciones", fmt(pos.shares, 6)) +
+        stat("Pusiste", fmt(pos.amount) + " " + pos.currency) +
+        stat("Vale hoy", ev.value != null ? fmt(ev.value) + " USD" : "n/a") +
       "</div>" +
       (pos.anchorDate
-        ? '<p class="sub">Levels from the ' + esc(pos.anchorDate) + " close (" +
-          fmt(pos.anchor) + "), which is the bar the strategy measured. They do not move with " +
-          "your fill &mdash; the stop is placed by volatility, not as a percentage below what " +
-          "you paid.</p>"
+        ? '<p class="sub">Niveles tomados del cierre del ' + esc(pos.anchorDate) + " (" +
+          fmt(pos.anchor) + "), que es la barra que midió la estrategia. No se mueven con " +
+          "tu precio de compra: el stop lo pone la volatilidad, no un porcentaje bajo lo que " +
+          "pagaste.</p>"
         : "") +
       rulesTable(pos, ev) +
       (ev.verdict === "HOLD" ? holdingNote() : "") +
       '<div class="actions"><button class="btn small danger" data-del="' + idx +
-      '">Remove</button></div></div>';
+      '">Quitar</button></div></div>';
   }).join("");
 
   host.querySelectorAll("[data-sym]").forEach(function (b) {
@@ -848,7 +941,7 @@ function renderPositions() {
 
   host.querySelectorAll("[data-del]").forEach(function (b) {
     b.addEventListener("click", function () {
-      if (!confirm("Remove this position? It is only stored here.")) return;
+      if (!confirm("¿Quitar esta posición? Solo está guardada aquí.")) return;
       var l = loadPositions(); l.splice(parseInt(b.dataset.del, 10), 1);
       savePositions(l); renderPositions();
     });
@@ -861,16 +954,17 @@ function strategyLine(symbol) {
   // instrument got a hand-picked method -- none did, and the uniformity is the point: a rule
   // that has to be tuned per symbol has been fitted to that symbol's past.
   var s = P(), pr = profile();
-  return '<p class="sub" style="margin:10px 0 0">Strategy <b>' + esc(MKT.strategy.name) +
-    "</b>, set to <b>" + esc(pr.title) + "</b> &mdash; the same rules on all " +
-    Object.keys(MKT.instruments).length + " instruments. Exit " +
-    (s.exit_on_trend_break ? "on a close under the 50-day average" : "at the stop ") +
-    (s.exit_on_trend_break ? ", at the stop " + s.stop_atr_multiple + " ATR below entry"
-                           : s.stop_atr_multiple + " ATR below entry") +
-    ", at the target " + s.take_profit_r_multiple + "x that risk, or after " +
-    s.max_holding_bars + " sessions &mdash; whichever comes first. " +
-    '<button class="lnk" data-sym="' + esc(symbol) + '">See ' + esc(symbol) +
-    " in detail &rsaquo;</button></p>";
+  return '<p class="sub" style="margin:10px 0 0">Estrategia <b>' + esc(MKT.strategy.name) +
+    "</b>, en modo <b>" + esc(pr.title) + "</b> &mdash; las mismas reglas para los " +
+    Object.keys(MKT.instruments).length + " instrumentos. Sale " +
+    (s.exit_on_trend_break
+      ? "con un cierre bajo el promedio de 50 días, en el stop " + s.stop_atr_multiple +
+        " ATR bajo la entrada"
+      : "en el stop " + s.stop_atr_multiple + " ATR bajo la entrada") +
+    ", en el objetivo a " + s.take_profit_r_multiple + "x ese riesgo, o después de " +
+    s.max_holding_bars + " sesiones &mdash; lo que ocurra primero. " +
+    '<button class="lnk" data-sym="' + esc(symbol) + '">Ver ' + esc(symbol) +
+    " en detalle &rsaquo;</button></p>";
 }
 
 function stat(k, v) {
@@ -943,16 +1037,19 @@ function marketRow(symbol) {
   var r = returnsOver(inst.c, WINDOWS);
   var missing = failingCount(inst);
   var signal = view(inst).signal;
+  // The verdict itself, not how near it is: a reader should not have to tap a row to find
+  // out what it says. The count stays as the reason underneath.
   var pill = signal === "BUY"
-    ? '<span class="pill buy">BUY</span>'
-    : signal === "SELL"
-      ? '<span class="pill sell">exit conditions</span>'
-      : '<span class="pill">' + missing + " to go</span>";
+    ? '<span class="pill buy">COMPRAR</span>'
+    : '<span class="pill">ESPERAR</span>';
+  var why = signal === "BUY"
+    ? "se cumplen las siete"
+    : missing === 1 ? "falta 1 condición" : "faltan " + missing + " condiciones";
 
   return '<button class="row2" data-sym="' + symbol + '">' +
     '<span><span class="sym">' + esc(symbol) + "</span>" + pill +
-    '<span class="meta">' + esc(inst.name) +
-    (inst.thin ? " \u00b7 thinly traded" : "") + "</span></span>" +
+    '<span class="meta">' + esc(why) + " · " + esc(inst.name) +
+    (inst.thin ? " · poco líquido" : "") + "</span></span>" +
     '<span class="' + (r["1m"] >= 0 ? "up" : "down") + ' tnum" ' +
       'style="text-align:right">' + pct(r["1m"]) + "</span>" +
     '<span class="chev">\u203a</span></button>';
@@ -969,19 +1066,19 @@ function renderMarket() {
   var head = "";
   if (buys.length) {
     head = '<p class="sub" style="margin-top:0"><b>' + buys.length +
-      " instrument(s) meet all seven entry conditions today.</b> That means the conditions " +
-      "hold on historical data. It is not a probability of profit, not a forecast, and not " +
-      "advice &mdash; across " + trainTrades() + " backtest trades on this setting the " +
-      "target was reached " + exitRate("take_profit") + " of the time.</p>" +
+      " instrumento(s) cumplen hoy las siete condiciones de entrada.</b> Eso significa que " +
+      "las condiciones se cumplen sobre datos históricos. No es una probabilidad de " +
+      "ganar, no es un pronóstico y no es un consejo: en " + trainTrades() +
+      " operaciones del backtest con esta configuración, el objetivo se alcanzó " +
+      exitRate("take_profit") + " de las veces.</p>" +
       buys.map(marketRow).join("");
   } else {
-    head = '<p class="sub" style="margin:0">Nothing meets all seven conditions today. That is ' +
-      "the normal case: the 2016&ndash;2021 backtest averaged about 13 entries a month across " +
-      "all 42 instruments. The closest are listed below, with what each is still missing.</p>";
+    head = '<p class="sub" style="margin:0">Hoy ninguno cumple las siete condiciones. Eso es ' +
+      "lo normal. Más abajo están todos, ordenados por cuánto les falta.</p>";
   }
   if (sells.length) {
     head += '<p class="sub" style="margin-top:14px"><b>' + sells.length +
-      " meet an exit condition.</b> That only matters for one you hold.</p>" +
+      " cumplen una condición de salida.</b> Eso solo importa si tienes alguno.</p>" +
       sells.map(marketRow).join("");
   }
   document.getElementById("signals").innerHTML = head;
@@ -992,13 +1089,13 @@ function renderMarket() {
     var sorted = r.symbols.slice().sort(function (a, b) {
       return (view(MKT.instruments[b]).score || 0) - (view(MKT.instruments[a]).score || 0);
     });
-    return '<div class="card"><h2 style="margin-top:0">' + esc(r.name) + "</h2>" +
-      '<p class="sub">' +
+    return '<div class="card"><h2 style="margin-top:0">' + esc(es(REGION_ES, r.name)) +
+      "</h2>" + '<p class="sub">' +
       (r.symbols.length === r.declared
-        ? r.symbols.length + " instruments"
-        : "<b>" + r.symbols.length + " of " + r.declared + "</b> evaluated") +
-      " \u00b7 benchmark " + esc(r.benchmark) +
-      " \u00b7 ranked by conditions met \u00b7 return over 1 month</p>" +
+        ? r.symbols.length + " instrumentos"
+        : "<b>" + r.symbols.length + " de " + r.declared + "</b> evaluados") +
+      " · referencia " + esc(r.benchmark) +
+      " · ordenados por condiciones cumplidas · retorno a 1 mes</p>" +
       sorted.map(marketRow).join("") + "</div>";
   }).join("");
 
@@ -1032,8 +1129,7 @@ function instrumentChart(inst) {
 
   var up = c[c.length - 1] >= c[0];
   return '<svg class="wide" viewBox="0 0 ' + W + " " + H +
-    '" role="img" aria-label="' + esc(inst.name) +
-    ' price over a year">' +
+    '" role="img" aria-label="Precio de ' + esc(inst.name) + ' en un año">' +
     '<line x1="' + pl + '" y1="' + (H - pb) + '" x2="' + (pl + pw) + '" y2="' + (H - pb) +
     '" stroke="#2f3a52" stroke-width="1"/>' +
     (ep.length > 1 ? '<polyline points="' + ep.join(" ") + '" fill="none" stroke="#3987e5" ' +
@@ -1045,8 +1141,8 @@ function instrumentChart(inst) {
     '<text x="' + pl + '" y="' + (H - 4) + '" class="lbl2">' + d[0] + "</text>" +
     '<text x="' + (pl + pw) + '" y="' + (H - 4) + '" text-anchor="end" class="lbl2">' +
     d[d.length - 1] + "</text></svg>" +
-    '<p class="sub" style="text-align:center;margin:6px 0 0">Solid: price. Dashed blue: the ' +
-    "50-day average the trend-break rule watches.</p>";
+    '<p class="sub" style="text-align:center;margin:6px 0 0">Línea llena: el precio. ' +
+    "Punteada azul: el promedio de 50 días que mira la regla de quiebre de tendencia.</p>";
 }
 
 function showDetail(symbol) {
@@ -1058,8 +1154,9 @@ function showDetail(symbol) {
   var bench = bsym && MKT.instruments[bsym] ? returnsOver(MKT.instruments[bsym].c, WINDOWS) : null;
   var labels = Object.keys(WINDOWS);
 
+  var ES_WINDOW = {"1w": "1 sem", "1m": "1 mes", "3m": "3 m", "6m": "6 m", "1y": "1 año"};
   var retTable = '<table class="rets"><thead><tr><th></th>' +
-    labels.map(function (l) { return "<th>" + l + "</th>"; }).join("") +
+    labels.map(function (l) { return "<th>" + ES_WINDOW[l] + "</th>"; }).join("") +
     "</tr></thead><tbody><tr><td>" + esc(symbol) + "</td>" +
     labels.map(function (l) {
       return '<td class="' + (mine[l] >= 0 ? "up" : "down") + '">' + pct(mine[l]) + "</td>";
@@ -1067,7 +1164,7 @@ function showDetail(symbol) {
     (bench
       ? "<tr><td>" + esc(bsym) + "</td>" + labels.map(function (l) {
           return '<td class="' + (bench[l] >= 0 ? "up" : "down") + '">' + pct(bench[l]) + "</td>";
-        }).join("") + "</tr><tr><td>difference</td>" + labels.map(function (l) {
+        }).join("") + "</tr><tr><td>diferencia</td>" + labels.map(function (l) {
           var g = (mine[l] == null || bench[l] == null) ? null : mine[l] - bench[l];
           return '<td class="' + (g >= 0 ? "up" : "down") + '">' + pct(g) + "</td>";
         }).join("") + "</tr>"
@@ -1076,72 +1173,77 @@ function showDetail(symbol) {
   var v = view(inst);
   var conds = (v.conditions || []).map(function (c) {
     return '<div class="cond' + (c.ok ? "" : " failing") + '">' +
-      '<span class="mark ' + (c.ok ? "ok" : "no") + '">' + (c.ok ? "\u2713" : "\u2717") +
-      '</span><span class="txt">' + esc(c.detail) + "</span></div>";
+      '<span class="mark ' + (c.ok ? "ok" : "no") + '">' + (c.ok ? "✓" : "✗") +
+      '</span><span class="txt">' + esc(conditionText(inst, c.name)) + "</span></div>";
   }).join("");
 
   var missing = failingCount(inst);
   var verdict = v.signal === "BUY"
-    ? '<span class="pill buy">all seven hold</span>'
-    : '<span class="pill">' + missing + " condition" + (missing === 1 ? "" : "s") + " short</span>";
+    ? '<span class="pill buy">COMPRAR · se cumplen las siete</span>'
+    : '<span class="pill">ESPERAR · ' +
+      (missing === 1 ? "falta 1" : "faltan " + missing) + "</span>";
 
   var trade = v.levels
-    ? '<table class="rets"><tbody><tr><td>If entered at the last close</td><td>' +
+    ? '<table class="rets"><tbody><tr><td>Si entras al último cierre</td><td>' +
       fmt(inst.c[inst.c.length - 1]) + "</td></tr><tr><td>Stop</td><td>" +
-      fmt(v.levels.stop) + "</td></tr><tr><td>Target</td><td>" + fmt(v.levels.target) +
-      "</td></tr><tr><td>Reward to risk</td><td>" + fmt(v.levels.rr) +
+      fmt(v.levels.stop) + "</td></tr><tr><td>Objetivo</td><td>" + fmt(v.levels.target) +
+      "</td></tr><tr><td>Beneficio a riesgo</td><td>" + fmt(v.levels.rr) +
       "x</td></tr></tbody></table>" +
-      '<p class="sub">The stop is ' + P().stop_atr_multiple +
-      " ATR below the close &mdash; a volatility measurement, " +
-      "not a round number. Pay more than the close and the whole difference comes off that " +
-      "ratio, because the levels do not follow your fill.</p>"
-    : '<p class="sub">No levels could be placed from the stored history.</p>';
+      '<p class="sub">El stop queda ' + fmt(P().stop_atr_multiple) +
+      " ATR bajo el cierre: es una medida de volatilidad, no un número redondo. Si " +
+      "pagas más que el cierre, toda esa diferencia sale de esa razón, porque los " +
+      "niveles no siguen tu precio de compra.</p>"
+    : '<p class="sub">No se pudieron fijar niveles con el historial guardado.</p>';
 
   document.getElementById("detail").innerHTML =
     '<div class="card"><div class="phead"><h3>' + esc(symbol) + "</h3>" +
       '<span class="tnum ' + (mine["1m"] >= 0 ? "up" : "down") + '" style="font-size:19px">' +
-      pct(mine["1m"]) + ' <span class="sub">1m</span></span></div>' +
-      '<p class="sub">' + esc(inst.name) + " \u00b7 " + esc(inst.region) + " \u00b7 " +
-      esc(inst.sector) + (inst.etf ? " \u00b7 ETF" : "") + "</p>" +
-      '<div class="verdict">' + verdict + '<span class="why">Score ' +
+      pct(mine["1m"]) + ' <span class="sub">1 mes</span></span></div>' +
+      '<p class="sub">' + esc(inst.name) + " · " + esc(es(REGION_ES, inst.region)) +
+      " · " + esc(es(SECTOR_ES, inst.sector)) + (inst.etf ? " · ETF" : "") + "</p>" +
+      '<div class="verdict">' + verdict + '<span class="why">Puntaje ' +
       (v.score == null ? "n/a" : fmt(v.score)) +
-      " &mdash; it counts conditions, not probability.</span></div>" +
+      " &mdash; cuenta condiciones, no probabilidad.</span></div>" +
       instrumentChart(inst) + "</div>" +
 
-    '<div class="card"><h2 style="margin-top:0">The seven entry conditions</h2>' + conds +
+    '<div class="card"><h2 style="margin-top:0">Las siete condiciones de entrada</h2>' +
+      conds +
       (v.signal === "BUY"
-        ? '<p class="sub">All seven hold. That is what a BUY means here: the conditions are ' +
-          "true on historical data. It is not a forecast, and nothing on this page says the " +
-          "price will rise.</p>"
-        : '<p class="sub">The crossed ones are what keep this from being an entry today.</p>') +
+        ? '<p class="sub">Se cumplen las siete. Eso es lo que significa COMPRAR acá: las ' +
+          "condiciones se cumplen sobre datos históricos. No es un pronóstico, y " +
+          "nada en esta página dice que el precio vaya a subir.</p>"
+        : '<p class="sub">Las marcadas con cruz son las que impiden que hoy sea una ' +
+          "entrada.</p>") +
     "</div>" +
 
-    '<div class="card"><h2 style="margin-top:0">How it has done</h2>' + retTable +
+    '<div class="card"><h2 style="margin-top:0">Cómo le ha ido</h2>' + retTable +
       (bench
-        ? '<p class="sub">Against ' + esc(bsym) + ", its region&rsquo;s benchmark &mdash; " +
-          "which is also tradable here, so a strategy can end up holding its own yardstick.</p>"
+        ? '<p class="sub">Comparado con ' + esc(bsym) + ", la referencia de su región " +
+          "&mdash; que también se puede comprar acá, así que la estrategia " +
+          "puede terminar teniendo su propia vara de medir.</p>"
         : "") + "</div>" +
 
-    '<div class="card"><h2 style="margin-top:0">The trade it would propose</h2>' + trade +
-    "</div>" +
+    '<div class="card"><h2 style="margin-top:0">La operación que propondría</h2>' +
+      trade + "</div>" +
 
-    '<div class="card"><h2 style="margin-top:0">Worth knowing</h2>' +
-      '<table class="rets"><tbody><tr><td>Traded value a day</td><td>' +
+    '<div class="card"><h2 style="margin-top:0">Vale la pena saber</h2>' +
+      '<table class="rets"><tbody><tr><td>Monto transado al día</td><td>' +
       (inst.turnover ? big(inst.turnover) + " USD" : "n/a") +
       "</td></tr><tr><td>RSI</td><td>" + fmt(inst.rsi, 1) +
-      "</td></tr><tr><td>Volatility (ATR)</td><td>" + fmt(inst.atr_pct, 2) +
-      "%</td></tr><tr><td>From its 52-week high</td><td>" + fmt(inst.from_high, 1) +
-      "%</td></tr></tbody></table>" +
-      (inst.liquidity_caveat
-        ? '<p class="sub" style="color:var(--warn)">' + esc(inst.liquidity_caveat) + "</p>" : "") +
+      "</td></tr><tr><td>Volatilidad (ATR)</td><td>" + fmt(inst.atr_pct, 2) +
+      "%</td></tr><tr><td>Desde su máximo de 52 semanas</td><td>" +
+      fmt(inst.from_high, 1) + "%</td></tr></tbody></table>" +
+      (inst.thin
+        ? '<p class="sub" style="color:var(--warn)">' + esc(liquidityNote(inst)) + "</p>" : "") +
       (inst.notes ? '<p class="sub">' + esc(inst.notes) + "</p>" : "") +
     "</div>" +
 
-    '<div class="note">Whether to buy this is not something this page will answer. It shows ' +
-    "which conditions hold, what the trade would look like, and that across " + trainTrades() +
-    " backtest trades on the " + esc(profile().title) + " setting the target was reached " +
-    exitRate("take_profit") + " of the time and the stop " + exitRate("stop_loss") + ". " +
-    lossRate() + " lost money. The decision is yours.</div>";
+    '<div class="note">Si conviene comprarlo o no es algo que esta página no va a ' +
+    "responder. Muestra qué condiciones se cumplen, cómo se vería la " +
+    "operación, y que en " + trainTrades() + " operaciones del backtest en modo " +
+    esc(profile().title) + " el objetivo se alcanzó " + exitRate("take_profit") +
+    " de las veces y el stop " + exitRate("stop_loss") + ". " + lossRate() +
+    " perdieron plata. La decisión es tuya.</div>";
 
   document.querySelectorAll(".tab").forEach(function (t) {
     t.setAttribute("aria-selected", "false");
@@ -1156,18 +1258,20 @@ function showDetail(symbol) {
 function renderLearn() {
   var p = P();
   var rows = [
-    ["trend", "Trend break", "trend_break",
+    ["trend", "Quiebre de tendencia", "trend_break",
      p.exit_on_trend_break
-       ? "The close falls below the 50-day average."
-       : "Switched off in this setting, so a wobble does not close the trade."],
+       ? "El cierre cae bajo el promedio de 50 días."
+       : "Apagado en esta configuración, así que un bandazo no cierra la operación."],
     ["stop", "Stop", "stop_loss",
-     "Price reaches the lower line, " + p.stop_atr_multiple +
-     " ATR below the entry bar's close."],
-    ["target", "Target", "take_profit",
-     "Price reaches the upper line, " + p.take_profit_r_multiple +
-     " times the risk above."],
-    ["time", "Time", "max_holding_period", p.max_holding_bars + " trading sessions pass."],
-    ["trend", "RSI", "rsi_extended", "RSI closes above " + p.exit_rsi_max + "."]
+     "El precio llega a la línea de abajo, " + fmt(p.stop_atr_multiple) +
+     " ATR bajo el cierre de la barra de entrada."],
+    ["target", "Objetivo", "take_profit",
+     "El precio llega a la línea de arriba, " + fmt(p.take_profit_r_multiple) +
+     " veces el riesgo más arriba."],
+    ["time", "Tiempo", "max_holding_period",
+     "Pasan " + p.max_holding_bars + " sesiones de mercado."],
+    ["trend", "RSI", "rsi_extended",
+     "El RSI cierra sobre " + fmt(p.exit_rsi_max, 0) + "."]
   ];
   // Sorted by how often each actually ended a trade, so the list reads in the order a
   // position is most likely to meet them.
@@ -1179,8 +1283,32 @@ function renderLearn() {
     var s = stats[x[2]];
     return '<tr><td><span class="dot ' + x[0] + '"></span><b>' + x[1] + "</b></td>" +
       "<td>" + x[3] + '</td><td class="n tnum">' + (s ? fmt(s.share_pct, 1) + "%" : "—") +
-      '</td><td class="n faint">' + (s ? "median " + pct(s.median_pnl_pct) : "never") +
+      '</td><td class="n faint">' + (s ? "mediana " + pct(s.median_pnl_pct) : "nunca") +
       "</td></tr>";
+  }).join("");
+
+  // Built from the same thresholds the conditions are checked against, so the dial moves it
+  // too. Seven hardcoded rows here described one setting and quietly misdescribed the others.
+  var entries = [];
+  if (p.require_price_above_ema200) {
+    entries.push(["Precio sobre el promedio de 200 días", "tendencia larga al alza"]);
+  }
+  if (p.require_ema50_above_ema200) {
+    entries.push(["Promedio de 50 días sobre el de 200", "la tendencia corta acompaña"]);
+  }
+  entries.push(["RSI entre " + fmt(p.rsi_min, 0) + " y " + fmt(p.rsi_max, 0),
+                "ni pánico ni euforia"]);
+  if (p.require_macd_positive) {
+    entries.push(["Histograma MACD positivo", "el impulso va a favor"]);
+  }
+  entries.push(["Retorno de " + p.roc_period + " sesiones sobre " + pct(p.min_roc_pct),
+                "viene subiendo"]);
+  entries.push(["Volumen sobre " + fmt(p.min_relative_volume) + "x lo normal",
+                "hay alguien interesado"]);
+  entries.push(["Volatilidad entre " + fmt(p.min_atr_pct) + "% y " + fmt(p.max_atr_pct) + "%",
+                "se mueve, pero no es una locura"]);
+  document.getElementById("entry-learn").innerHTML = entries.map(function (e) {
+    return "<tr><td>" + e[0] + '</td><td class="n faint">' + e[1] + "</td></tr>";
   }).join("");
 }
 
@@ -1205,26 +1333,44 @@ function wireForm() {
 
   document.getElementById("f-date").value = MKT.as_of || new Date().toISOString().slice(0, 10);
 
+  // "50.000" and "50,000" do not mean the same thing to everyone, and guessing silently is
+  // how an amount ends up a thousand times off. The field says what it understood.
+  ["f-amount", "f-price", "f-fees"].forEach(function (id) {
+    var input = document.getElementById(id);
+    var echo = document.createElement("div");
+    echo.className = "hint";
+    input.parentNode.insertBefore(echo, input.nextSibling);
+    input.addEventListener("input", function () {
+      var raw = input.value.trim();
+      var n = parseAmount(raw);
+      echo.textContent = !raw ? "" : isNaN(n) ? "No se entiende ese número." : "= " + fmt(n);
+    });
+  });
+
   document.getElementById("f-save").addEventListener("click", function () {
     var err = document.getElementById("f-error");
     err.classList.add("hidden");
 
     var symbol = sel.value;
-    var amount = parseFloat(document.getElementById("f-amount").value);
-    var price = parseFloat(document.getElementById("f-price").value);
+    var amount = parseAmount(document.getElementById("f-amount").value);
+    var price = parseAmount(document.getElementById("f-price").value);
     var currency = document.getElementById("f-currency").value;
     var when = document.getElementById("f-date").value;
-    var fees = parseFloat(document.getElementById("f-fees").value) || 0;
+    var fees = parseAmount(document.getElementById("f-fees").value) || 0;
 
     function fail(msg) { err.textContent = msg; err.classList.remove("hidden"); }
 
-    if (!symbol) return fail("Pick an instrument.");
-    if (!(amount > 0)) return fail("How much did you spend?");
-    if (!(price > 0)) return fail("What price per share did Fintual show? Without it the share count cannot be worked out.");
-    if (!when) return fail("Pick a date.");
+    if (!symbol) return fail("Elige un instrumento.");
+    if (!(amount > 0)) return fail("¿Cuánto gastaste? Puedes escribirlo con coma, " +
+                                   "por ejemplo 20,36.");
+    if (!(price > 0)) return fail("¿Qué precio por acción te mostró " +
+                                  "Fintual? Sin eso no se puede calcular cuántas " +
+                                  "acciones compraste.");
+    if (!when) return fail("Elige una fecha.");
     if (loadPositions().some(function (p) { return p.symbol === symbol; })) {
-      return fail("You already have an open " + symbol + ". Remove it first — there is no " +
-                  "lot-level accounting here, so two would make every figure for it wrong.");
+      return fail("Ya tienes " + symbol + " abierto. Quítalo primero: acá no hay " +
+                  "contabilidad por lote, así que con dos todas las cifras de ese " +
+                  "instrumento quedarían mal.");
     }
 
     // CLP is converted only if a rate is available; otherwise the amount is kept as entered and
@@ -1232,7 +1378,7 @@ function wireForm() {
     var amountUsd = amount;
     if (currency === "CLP") {
       var rate = MKT.fx && MKT.fx.CLP;
-      if (!rate) return fail("No exchange rate is available in this data. Enter the amount in USD.");
+      if (!rate) return fail("No hay tipo de cambio en estos datos. Ingresa el monto en USD.");
       amountUsd = amount / rate;
     }
 
@@ -1240,9 +1386,9 @@ function wireForm() {
     // new bars arrive, and a stop that moves on its own is not a stop.
     var lv = levelsFor(MKT.instruments[symbol], when);
     if (!lv) {
-      return fail("Not enough stored history for " + symbol + " to place a stop and a target. " +
-                  "Nothing is recorded, because a position with no stop is one nothing is " +
-                  "watching.");
+      return fail("No hay historial suficiente de " + symbol + " para fijar un stop y un " +
+                  "objetivo. No se registra nada, porque una posición sin stop es una " +
+                  "que nadie está vigilando.");
     }
 
     var list = loadPositions();
@@ -1280,13 +1426,14 @@ function wireForm() {
         if (!Array.isArray(incoming)) throw new Error("not a list");
         savePositions(incoming);
         renderPositions();
-      } catch (e) { alert("That file could not be read as positions."); }
+      } catch (e) { alert("No se pudo leer ese archivo como posiciones."); }
     };
     r.readAsText(f);
   });
 
   document.getElementById("f-clear").addEventListener("click", function () {
-    if (!confirm("Delete every position stored here? There is no other copy unless you exported one.")) return;
+    if (!confirm("¿Borrar todas las posiciones guardadas acá? No hay otra copia " +
+                 "salvo que hayas exportado una.")) return;
     savePositions([]); renderPositions();
   });
 }
@@ -1323,13 +1470,13 @@ fetch("market.json?v=" + Date.now())
     var age = MKT.as_of
       ? Math.round((Date.now() - Date.parse(MKT.as_of)) / 86400000) : null;
     document.getElementById("asof").innerHTML = MKT.as_of
-      ? "Prices through <b>" + MKT.as_of + "</b>" +
+      ? "Precios hasta el <b>" + MKT.as_of + "</b>" +
         (age != null && age > 4
-          ? ' · <span style="color:var(--warn)">' + age + " days old</span>"
+          ? ' · <span style="color:var(--warn)">' + age + " días de antigüedad</span>"
           : "")
-      : "No price data";
+      : "Sin datos de precio";
     document.getElementById("stamp").textContent =
-      Object.keys(MKT.instruments).length + " instruments";
+      Object.keys(MKT.instruments).length + " instrumentos";
 
     document.getElementById("d-back").addEventListener("click", function () {
       document.querySelector('[data-view="market"]').click();
@@ -1343,9 +1490,10 @@ fetch("market.json?v=" + Date.now())
   })
   .catch(function (e) {
     document.getElementById("boot").innerHTML =
-      '<p style="margin:0">Could not load market data.</p><p class="sub">' + esc(e.message) +
-      "</p><p class=\"sub\">If this persists, the scheduled job that publishes it may have " +
-      "failed. Your positions are untouched — they are stored in this browser.</p>";
+      '<p style="margin:0">No se pudieron cargar los datos de mercado.</p>' +
+      '<p class="sub">' + esc(e.message) + "</p>" +
+      '<p class="sub">Si esto sigue pasando, puede haber fallado el proceso programado que ' +
+      "los publica. Tus posiciones no se tocaron: están guardadas en este navegador.</p>";
   });
 </script>
 </body>

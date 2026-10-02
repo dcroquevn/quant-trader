@@ -104,9 +104,9 @@ class TestPayloadCarriesNothingPersonal:
         payload = json.loads((built / "market.json").read_text(encoding="utf-8"))
         instrument = payload["instruments"]["GOOGL"]
         assert set(instrument) == {
-            "by_profile", "ema200", "rsi", "macd_hist", "rel_volume", "atr_pct",
+            "by_profile", "ema200", "rsi", "macd_hist", "rel_volume", "atr_pct", "roc",
             "from_high", "name", "region", "sector", "etf", "turnover", "thin",
-            "liquidity_caveat", "notes", "d", "h", "l", "c", "e", "a",
+            "notes", "d", "h", "l", "c", "e", "a",
         }
 
 
@@ -384,3 +384,77 @@ console.log(JSON.stringify(out));
         assert got["aggressive"]["verdict"] == "HOLD", (
             "the aggressive setting has no trend-break exit, so this must stay open"
         )
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+class TestTheSpanishPage:
+    """What the reader sees, and the input they type it into."""
+
+    _run = TestBrowserArithmeticMatchesPython._run
+
+    def test_an_amount_typed_with_a_comma_is_read_correctly(self, built) -> None:
+        """The bug this replaced was silent.
+
+        `type="number"` validates against the browser's locale, so on a Spanish phone the
+        field accepted "20,36" visually and handed back an empty string. The position was
+        rejected as "how much did you spend?" with the amount plainly on screen.
+        """
+        got = self._run(
+            built,
+            """
+const cases = {
+  "20,36": 20.36,      // Chilean decimal comma, the case that was broken
+  "20.36": 20.36,      // and the dot, which has to keep working
+  "1.234,56": 1234.56, // dots grouping, comma deciding
+  "1,234.56": 1234.56, // the other way round
+  "1.234": 1234,       // three trailing digits after a lone dot: a thousand, not 1.234
+  "0,5": 0.5,
+  "  7,25 ": 7.25,
+  "": null,
+  "abc": null
+};
+const out = {};
+Object.keys(cases).forEach(function (k) {
+  const v = parseAmount(k);
+  out[k] = isNaN(v) ? null : v;
+});
+console.log(JSON.stringify({got: out, want: cases}));
+""",
+        )
+        assert got["got"] == got["want"]
+
+    def test_every_market_row_states_its_verdict(self, built) -> None:
+        """Asked for: the verdict visible without tapping.
+
+        The row used to show "1 to go", which says how close something is and never says
+        what it is.
+        """
+        got = self._run(
+            built,
+            """
+const rows = Object.keys(MKT.instruments).map(function (s) { return marketRow(s); });
+console.log(JSON.stringify({
+  n: rows.length,
+  allStated: rows.every(function (r) {
+    return r.indexOf("COMPRAR") !== -1 || r.indexOf("ESPERAR") !== -1;
+  }),
+  noEnglish: rows.every(function (r) { return r.indexOf("to go") === -1; })
+}));
+""",
+        )
+        assert got["n"] > 0
+        assert got["allStated"], "a row rendered without COMPRAR or ESPERAR"
+        assert got["noEnglish"]
+
+    def test_the_rendered_page_carries_no_leftover_english_labels(self, built) -> None:
+        """A spot check on the phrases that were hardest to find, not a language detector."""
+        html = (built / "index.html").read_text(encoding="utf-8")
+        for phrase in (
+            "Your positions",
+            "Record a purchase",
+            "How it works",
+            "Touch the chart",
+            "thinly traded",
+            "Worth now",
+        ):
+            assert phrase not in html, f"{phrase!r} is still in the page"

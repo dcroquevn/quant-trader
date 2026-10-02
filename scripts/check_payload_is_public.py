@@ -47,6 +47,7 @@ PER_INSTRUMENT = {
     "macd_hist",
     "rel_volume",
     "atr_pct",
+    "roc",
     "from_high",
     "name",
     "region",
