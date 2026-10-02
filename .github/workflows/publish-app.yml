@@ -1,0 +1,109 @@
+# Publishes the web app to GitHub Pages, every weekday after the US close.
+#
+# WHAT IS PUBLISHED
+#   `index.html` and `market.json`: prices, moving averages, ATR and today's signal, for the 42
+#   instruments. Public market data. Nothing about anybody.
+#
+# WHAT IS NOT
+#   Your positions. They are typed into the page on your phone and kept in that browser's
+#   localStorage. They never reach this runner, this repository, or the network -- the page
+#   computes your verdict on your device, from public data and private holdings, and only your
+#   device ever sees the combination.
+#
+#   That is why this job needs no secrets, and why the repository being public costs nothing.
+#
+# THE GUARD BELOW IS NOT DECORATION
+#   The repository is public. A future change that put a holding into market.json would publish
+#   someone's positions, and nothing else in the pipeline would notice. The step named "Refuse
+#   to publish anything personal" fails the build instead, and tests/test_webapp.py asserts the
+#   same property from the other direction: the payload must be byte-identical whether or not a
+#   position exists.
+
+name: 4. Publish the app to Pages
+
+on:
+  schedule:
+    # 22:00 UTC on weekdays: after the US close, with margin for the provider to settle the
+    # day's final bar. Actions cron is not punctual -- a run can start 10-30 minutes late, and
+    # occasionally not at all. A missing day is normal rather than a fault.
+    - cron: '00 22 * * 1-5'
+  workflow_dispatch:
+  # Editing the app or its exporter republishes it, which is also how it gets smoke-tested.
+  push:
+    paths:
+      - '.github/workflows/publish-app.yml'
+      - 'backend/app/reporting/app_template.html'
+      - 'backend/app/reporting/webapp.py'
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+
+      - name: Install
+        run: pip install -r requirements.txt
+
+      # Cached so the daily run does not re-fetch ten years of bars. Nothing personal is in it:
+      # positions live in the browser, not in this database.
+      - name: Restore prices
+        uses: actions/cache@v4
+        with:
+          path: data
+          key: quant-trader-prices-${{ github.run_id }}
+          restore-keys: |
+            quant-trader-prices-
+            quant-trader-db-
+
+      - name: Download bars
+        env:
+          PYTHONPATH: backend
+        run: python -m app download-data --start 2016-01-01
+
+      - name: Build the app
+        env:
+          PYTHONPATH: backend
+          PAPER_TRADING: 'true'
+          LIVE_TRADING: 'false'
+        run: python -m app app --output site
+
+      - name: Refuse to publish anything personal
+        env:
+          PYTHONPATH: backend
+        run: python scripts/check_payload_is_public.py site/market.json site/index.html
+
+      - name: Keep the prices
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: data
+          key: quant-trader-prices-${{ github.run_id }}
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

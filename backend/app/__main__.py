@@ -3179,6 +3179,34 @@ def _sync_positions_file() -> None:
             "recorded; run `python -m app positions-export` to retry."
         )
 
+
+@app.command("app")
+def build_app(
+    output: str = typer.Option("site", "--output", "-o", help="Directory to write into."),
+    strategy_name: str = typer.Option("trend_momentum", "--strategy", "-s"),
+) -> None:
+    """Build the static web app: a page plus the market data it reads.
+
+    Safe to publish. The data file contains prices and nothing about anybody -- your positions
+    are typed into the page on your device and kept in that browser's storage, so the arithmetic
+    about your money happens where the money is known and nowhere else.
+    """
+    from app.reporting.webapp import write_app
+
+    setup_logging()
+    init_database()
+
+    with session_scope() as session:
+        written = write_app(session, Path(output), strategy_name=strategy_name)
+
+    size = written["data"].stat().st_size / 1024
+    console.print(f"[green]OK[/green] app written to [cyan]{Path(output).resolve()}[/cyan]")
+    console.print(f"[dim]index.html + market.json ({size:,.0f} KB)[/dim]")
+    console.print(
+        "[dim]Open index.html directly, or publish the directory. It carries no position "
+        "data: those live in the browser that records them.[/dim]"
+    )
+
 @app.command("serve")
 def serve(
     host: str = typer.Option(None, "--host"),

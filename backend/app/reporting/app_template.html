@@ -1,0 +1,875 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0b0e14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<title>quant-trader</title>
+<!--
+  A static page that knows the market and nothing about you.
+
+  WHERE YOUR POSITIONS LIVE
+    In this browser's localStorage, on this device. They are never sent anywhere: there is no
+    server to send them to. This page is a file on GitHub Pages, served from a public
+    repository, so anything it *carried* would be public. It carries prices.
+
+    The consequence worth knowing before relying on it: clearing site data, using a private
+    window, or opening this on another device means the positions are not there. Export them
+    with the button at the bottom and keep the file.
+
+  WHY THE EXIT RULES ARE REIMPLEMENTED HERE
+    Your position is private and the verdict depends on it, so the verdict has to be computed
+    on the device that holds it. The rule parameters arrive in market.json rather than being
+    written into this file, and tests/test_webapp.py checks this arithmetic against the Python
+    engine on the same inputs -- two implementations of one rule is a real risk and that test is
+    what keeps them honest.
+
+  WHAT IT WILL NOT DO
+    Place an order. There is no broker connection anywhere in this project. HOLD and SELL are
+    what the strategy's rules say, not advice, and the strategy has never been shown to be
+    profitable.
+-->
+<style>
+:root{
+  --bg:#0b0e14; --panel:#141924; --raised:#0f131b; --line:#232b3d; --line2:#2f3a52;
+  --text:#e2e8f0; --dim:#8a94a8; --faint:#4a5468;
+  --pos:#26d98a; --neg:#ff5c7c; --warn:#ffb84d; --accent:#4d9fff;
+  --s1:#3987e5; --s2:#d95926; --s3:#199e70;
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;background:var(--bg);color:var(--text);
+  font:15px/1.55 -apple-system,BlinkMacSystemFont,'Segoe UI',Inter,system-ui,sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:16px 16px calc(96px + env(safe-area-inset-bottom))}
+h1{font-size:19px;margin:0}
+h2{font-size:15px;margin:28px 0 12px;padding-bottom:7px;border-bottom:1px solid var(--line);
+  text-transform:uppercase;letter-spacing:.06em;color:var(--dim);font-weight:600}
+h3{margin:0;font-size:22px;letter-spacing:-.01em}
+p{margin:9px 0}
+.sub{color:var(--dim);font-size:12.5px;line-height:1.55}
+.faint{color:var(--faint)}
+code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:.9em}
+button{font:inherit;cursor:pointer}
+.tnum{font-variant-numeric:tabular-nums}
+
+header{display:flex;align-items:center;justify-content:space-between;gap:12px;
+  padding:4px 0 14px}
+.stamp{font-size:11.5px;color:var(--dim);text-align:right;line-height:1.4}
+
+.card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:16px;margin:0 0 14px}
+.note{background:rgba(255,184,77,.06);border:1px solid rgba(255,184,77,.25);
+  border-radius:9px;padding:12px 14px;margin:12px 0;font-size:12.5px;color:#ffd08a;
+  line-height:1.55}
+.note b{color:var(--warn)}
+.info{background:rgba(77,159,255,.06);border:1px solid rgba(77,159,255,.26);
+  border-radius:9px;padding:12px 14px;margin:12px 0;font-size:12.5px;color:#a9cdff;
+  line-height:1.55}
+
+/* ---- the verdict, which is the whole point of the page ---- */
+.verdict{display:flex;align-items:center;gap:10px;margin:14px 0 4px}
+.badge{font-size:26px;font-weight:700;letter-spacing:.04em;padding:7px 18px;border-radius:9px;
+  line-height:1}
+.badge.hold{background:rgba(38,217,138,.14);color:var(--pos);
+  box-shadow:inset 0 0 0 1px rgba(38,217,138,.4)}
+.badge.sell{background:rgba(255,92,124,.14);color:var(--neg);
+  box-shadow:inset 0 0 0 1px rgba(255,92,124,.45)}
+.badge.unknown{background:rgba(138,148,168,.12);color:var(--dim);
+  box-shadow:inset 0 0 0 1px var(--line2)}
+.verdict .why{font-size:12.5px;color:var(--dim);line-height:1.45}
+
+.phead{display:flex;align-items:baseline;justify-content:space-between;gap:10px;flex-wrap:wrap}
+.pnl{font-size:22px;font-weight:600}
+.up{color:var(--pos)} .down{color:var(--neg)}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(96px,1fr));gap:8px;margin:14px 0 0}
+.stat{background:var(--raised);border:1px solid var(--line);border-radius:7px;padding:8px 10px}
+.stat .k{font-size:10px;color:var(--dim);text-transform:uppercase;letter-spacing:.05em}
+.stat .v{margin-top:3px;font-size:15px}
+
+table{width:100%;border-collapse:collapse}
+.rules td{padding:9px 6px;border-bottom:1px solid var(--line);font-size:13px;
+  vertical-align:top}
+.rules tr:last-child td{border-bottom:0}
+.rules .n{text-align:right;white-space:nowrap}
+.dot{display:inline-block;width:9px;height:9px;border-radius:50%;margin-right:7px;
+  vertical-align:middle}
+.dot.stop{background:var(--neg)} .dot.target{background:var(--pos)}
+.dot.trend{background:var(--s1)} .dot.time{background:var(--dim)}
+.met{color:var(--neg);font-weight:600}
+
+svg{display:block;width:100%;height:auto;overflow:visible}
+.readout{font-size:12.5px;color:var(--dim);background:var(--raised);
+  border:1px solid var(--line);border-radius:7px;padding:8px 10px;margin:0 0 9px;
+  text-align:center;min-height:18px}
+.lbl{font-size:9.5px;fill:var(--dim);font-family:ui-monospace,Menlo,monospace}
+.lbl2{font-size:8.5px;fill:var(--faint);font-family:ui-monospace,Menlo,monospace}
+
+/* ---- the add/edit form ---- */
+.field{margin:0 0 12px}
+.field label{display:block;font-size:11.5px;color:var(--dim);margin:0 0 5px;
+  text-transform:uppercase;letter-spacing:.04em}
+.field .hint{font-size:11.5px;color:var(--faint);margin-top:5px;line-height:1.45}
+input,select{width:100%;padding:11px 12px;background:var(--raised);color:var(--text);
+  border:1px solid var(--line2);border-radius:8px;font:inherit;font-variant-numeric:tabular-nums}
+input:focus,select:focus{outline:none;border-color:var(--accent)}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn{width:100%;padding:13px;border-radius:9px;border:1px solid var(--line2);
+  background:var(--raised);color:var(--text);font-weight:600}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#06101f}
+.btn.danger{color:var(--neg);border-color:rgba(255,92,124,.4);background:transparent}
+.btn.small{width:auto;padding:7px 13px;font-size:12.5px;font-weight:500}
+.actions{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+.err{color:var(--neg);font-size:12.5px;margin:9px 0 0}
+
+.sig{display:flex;justify-content:space-between;gap:10px;padding:11px 0;
+  border-bottom:1px solid var(--line);font-size:13.5px}
+.sig:last-child{border-bottom:0}
+.sig .tag{font-size:10.5px;padding:2px 7px;border-radius:4px;border:1px solid var(--line2);
+  color:var(--dim)}
+.sig .tag.buy{color:var(--pos);border-color:rgba(38,217,138,.4)}
+.tabs{display:flex;gap:6px;margin:0 0 14px;overflow-x:auto;padding-bottom:2px}
+.tab{padding:8px 14px;border-radius:999px;border:1px solid var(--line);background:transparent;
+  color:var(--dim);font-size:13px;white-space:nowrap}
+.tab[aria-selected="true"]{background:var(--panel);color:var(--text);border-color:var(--line2)}
+footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
+  font-size:11.5px;color:var(--faint);line-height:1.6}
+.hidden{display:none !important}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <div>
+    <h1>quant-trader</h1>
+    <div class="sub" id="asof">loading…</div>
+  </div>
+  <div class="stamp" id="stamp"></div>
+</header>
+
+<div id="boot" class="card">Loading market data…</div>
+
+<main id="app" class="hidden">
+
+  <div class="tabs" role="tablist">
+    <button class="tab" role="tab" aria-selected="true" data-view="positions">Your positions</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="market">Market</button>
+    <button class="tab" role="tab" aria-selected="false" data-view="learn">How it works</button>
+  </div>
+
+  <!-- ============================ POSITIONS ============================ -->
+  <section id="view-positions">
+    <div id="positions"></div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Record a purchase</h2>
+      <p class="sub">What you bought, and what you actually paid. This stays on this phone —
+      it is never sent anywhere, because there is nowhere to send it.</p>
+
+      <div class="field">
+        <label for="f-symbol">Which instrument</label>
+        <select id="f-symbol"></select>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="f-amount">Amount you spent</label>
+          <input id="f-amount" type="number" inputmode="decimal" step="0.01" placeholder="20.36">
+        </div>
+        <div class="field">
+          <label for="f-currency">Currency</label>
+          <select id="f-currency">
+            <option value="USD">USD</option>
+            <option value="CLP">CLP</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="field">
+        <label for="f-price">Price per share — the one Fintual shows you</label>
+        <input id="f-price" type="number" inputmode="decimal" step="0.01" placeholder="351.44">
+        <div class="hint">Use Fintual's number, not the one on this page. Fintual fills during
+        the session; the prices here are the previous close. On 2026-10-01 that difference was
+        2.1% on GOOGL, which took the setup from 3.0x reward-to-risk to 1.8x.</div>
+      </div>
+
+      <div class="row">
+        <div class="field">
+          <label for="f-date">Date</label>
+          <input id="f-date" type="date">
+        </div>
+        <div class="field">
+          <label for="f-fees">Fees (optional)</label>
+          <input id="f-fees" type="number" inputmode="decimal" step="0.01" placeholder="0">
+        </div>
+      </div>
+
+      <button class="btn primary" id="f-save">Record it</button>
+      <p class="err hidden" id="f-error"></p>
+      <p class="sub" style="margin-top:12px">This records what you did. It does not buy
+      anything and cannot: there is no broker connection in this project.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">Keep a copy</h2>
+      <p class="sub">These live only in this browser. Clearing site data, a private window, or
+      a different device means they are gone. Export now and keep the file somewhere.</p>
+      <div class="actions">
+        <button class="btn small" id="f-export">Export</button>
+        <button class="btn small" id="f-import">Import</button>
+        <button class="btn small danger" id="f-clear">Delete all</button>
+      </div>
+      <input type="file" id="f-file" accept="application/json" class="hidden">
+    </div>
+  </section>
+
+  <!-- ============================= MARKET ============================== -->
+  <section id="view-market" class="hidden">
+    <div class="card">
+      <h2 style="margin-top:0">Signals today</h2>
+      <div id="signals"></div>
+    </div>
+    <div id="regions"></div>
+  </section>
+
+  <!-- ============================== LEARN ============================== -->
+  <section id="view-learn" class="hidden">
+    <div class="card">
+      <h2 style="margin-top:0">What HOLD and SELL mean here</h2>
+      <p class="sub"><b>HOLD</b> means none of the strategy's four exit rules has been met.
+      <b>SELL</b> means one has. Neither is advice, and neither is a forecast — they are what a
+      set of rules says about a price series.</p>
+      <p class="sub">The rules were chosen before you bought anything, which is the point of
+      having them: the decision gets made when you are not holding the position.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">The four ways a position ends</h2>
+      <table class="rules"><tbody id="exits-learn"></tbody></table>
+      <p class="sub" style="margin-top:12px"><b>The target is not a prediction.</b> It does not
+      mark where the price is expected to turn. It is three times what you risked, fixed in
+      advance so taking a profit is decided before there is a profit to feel anything about.
+      Four times out of five the price never reached it.</p>
+      <p class="sub">Notice which row is largest. The trend break ends more positions than the
+      stop and the target together, and it is the one without a fixed level — it moves.</p>
+    </div>
+
+    <div class="card">
+      <h2 style="margin-top:0">What it looks for before entering</h2>
+      <p class="sub">Seven conditions, all at once. A score of 1.00 means seven of seven held.
+      It counts conditions; it is not a probability of anything.</p>
+      <table class="rules"><tbody>
+        <tr><td>Price above the 200-day average</td><td class="n faint">long trend up</td></tr>
+        <tr><td>50-day above the 200-day</td><td class="n faint">short trend agrees</td></tr>
+        <tr><td>RSI between 40 and 70</td><td class="n faint">neither panic nor euphoria</td></tr>
+        <tr><td>MACD histogram positive</td><td class="n faint">momentum with it</td></tr>
+        <tr><td>20-session return above zero</td><td class="n faint">up over the month</td></tr>
+        <tr><td>Volume above 1.2× normal</td><td class="n faint">someone is interested</td></tr>
+        <tr><td>Volatility inside a band</td><td class="n faint">sizeable, not wild</td></tr>
+      </tbody></table>
+    </div>
+
+    <div class="note">
+      <b>None of this establishes that the strategy works.</b> Two of every three backtest
+      trades lost money. What carried the sample was a small number of winners held for more
+      than a month — which a few trades a year cannot reproduce. Every figure describes one
+      historical sample, and a pattern repeating is an assumption, not a finding.
+    </div>
+
+    <div class="info">
+      <b>Your positions never leave this phone.</b> They are in this browser's storage. This
+      page is served from a public repository, so anything it carried would be public — it
+      carries prices, and the arithmetic about your money happens here.
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  No part of this system places orders, and live trading is not implemented. Prices come from
+  free providers with no service guarantee and are previous closes, not live quotes. Every
+  instrument is US-listed and priced in USD — the Chilean and Asian ones are ADRs and country
+  ETFs, so a return carries the currency move as well.
+</footer>
+</div>
+
+<script>
+"use strict";
+/* ------------------------------------------------------------------ *
+ * State
+ * ------------------------------------------------------------------ */
+var KEY = "quant-trader.positions.v1";
+var MKT = null;
+
+function loadPositions() {
+  try { return JSON.parse(localStorage.getItem(KEY) || "[]"); }
+  catch (e) { return []; }
+}
+function savePositions(list) {
+  try { localStorage.setItem(KEY, JSON.stringify(list)); }
+  catch (e) { alert("This browser refused to save. Private windows often do."); }
+}
+
+/* ------------------------------------------------------------------ *
+ * The exit rules, recomputed here because the position is private.
+ *
+ * Parameters come from the payload, never hardcoded: two implementations of one rule drift,
+ * and tests/test_webapp.py checks this arithmetic against the Python engine on the same
+ * inputs. If you change a number here, that test should fail.
+ * ------------------------------------------------------------------ */
+function indexOnOrAfter(dates, iso) {
+  for (var i = 0; i < dates.length; i++) if (dates[i] >= iso) return i;
+  return -1;
+}
+
+function levelsFor(inst, entryISO) {
+  // Anchored on the close of the last bar at or before the entry, which is what the strategy
+  // used when it produced the signal. Anchoring on the price actually paid would invent a rule
+  // the backtest never measured.
+  var i = indexOnOrAfter(inst.d, entryISO);
+  if (i === -1) i = inst.d.length - 1;
+  if (i > 0 && inst.d[i] > entryISO) i -= 1;
+
+  var close = inst.c[i], atr = inst.a[i];
+  if (!(close > 0) || !(atr > 0)) return null;
+
+  var stop = close - MKT.strategy.stop_atr_multiple * atr;
+  if (!(stop > 0)) return null;
+  return {
+    stop: stop,
+    target: close + MKT.strategy.take_profit_r_multiple * (close - stop),
+    anchor: close,
+    anchorDate: inst.d[i],
+    index: i
+  };
+}
+
+function evaluate(pos) {
+  var inst = MKT.instruments[pos.symbol];
+  if (!inst) return { verdict: "UNKNOWN", why: "No market data for " + pos.symbol + "." };
+
+  var lv = pos.stop && pos.target
+    ? { stop: pos.stop, target: pos.target, index: indexOnOrAfter(inst.d, pos.date) }
+    : levelsFor(inst, pos.date);
+  if (!lv) return { verdict: "UNKNOWN", why: "Not enough history to place the levels." };
+
+  var start = indexOnOrAfter(inst.d, pos.date);
+  if (start === -1) {
+    return { verdict: "UNKNOWN", why: "No stored session on or after " + pos.date + " yet." };
+  }
+
+  var last = inst.c.length - 1;
+  var lastClose = inst.c[last];
+  var ema = inst.e[last];
+
+  // Walk forward from the session after the entry, stopping at the first rule met -- the same
+  // order the backtester uses: price exits before the trend break.
+  var fired = null;
+  for (var i = start + 1; i <= last; i++) {
+    if (inst.l[i] <= lv.stop) { fired = { rule: "stop", at: inst.d[i] }; break; }
+    if (inst.h[i] >= lv.target) { fired = { rule: "target", at: inst.d[i] }; break; }
+    if (inst.e[i] != null && inst.c[i] < inst.e[i]) {
+      fired = { rule: "trend", at: inst.d[i] }; break;
+    }
+    if (i - start >= MKT.strategy.max_holding_bars) {
+      fired = { rule: "time", at: inst.d[i] }; break;
+    }
+  }
+
+  var held = last - start;
+  var out = {
+    levels: lv, lastClose: lastClose, ema: ema, held: held,
+    pnlPct: (lastClose / pos.price - 1) * 100,
+    value: lastClose * pos.shares
+  };
+
+  if (fired) {
+    out.verdict = "SELL";
+    out.fired = fired;
+    out.why = {
+      stop: "The stop at " + fmt(lv.stop) + " was reached on " + fired.at + ".",
+      target: "The target at " + fmt(lv.target) + " was reached on " + fired.at + ".",
+      trend: "The close fell under the 50-day average on " + fired.at + ".",
+      time: "It passed " + MKT.strategy.max_holding_bars + " sessions."
+    }[fired.rule];
+    return out;
+  }
+
+  // Nothing has fired. A condition met on today's close becomes an exit at the next session's
+  // open, so it is reported separately rather than as a trigger.
+  if (ema != null && lastClose < ema) {
+    out.verdict = "SELL";
+    out.pending = true;
+    out.why = "Today's close " + fmt(lastClose) + " is under the 50-day average " + fmt(ema) +
+              ". The rule acts on the next session's open.";
+    return out;
+  }
+
+  out.verdict = "HOLD";
+  out.why = "None of the four exit rules has been met.";
+  return out;
+}
+
+/* ------------------------------------------------------------------ *
+ * Formatting
+ * ------------------------------------------------------------------ */
+function fmt(n, d) {
+  if (n == null || isNaN(n)) return "n/a";
+  return n.toLocaleString(undefined, {
+    minimumFractionDigits: d == null ? 2 : d, maximumFractionDigits: d == null ? 2 : d
+  });
+}
+function pct(n) {
+  if (n == null || isNaN(n)) return "n/a";
+  return (n > 0 ? "+" : "") + n.toFixed(2) + "%";
+}
+function esc(s) {
+  return String(s).replace(/[&<>"]/g, function (c) {
+    return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * The position chart
+ * ------------------------------------------------------------------ */
+function chart(pos, ev) {
+  var inst = MKT.instruments[pos.symbol];
+  var start = Math.max(0, indexOnOrAfter(inst.d, pos.date) - 70);
+  if (start < 0) start = 0;
+  var d = inst.d.slice(start), c = inst.c.slice(start), e = inst.e.slice(start);
+  if (d.length < 2) return "";
+
+  var W = 460, H = 250, pl = 6, pr = 56, pt = 12, pb = 20;
+  var pw = W - pl - pr, ph = H - pt - pb;
+
+  var anchors = [pos.price];
+  if (ev.levels) { anchors.push(ev.levels.stop, ev.levels.target); }
+  var all = c.concat(anchors).filter(function (v) { return v != null && !isNaN(v); });
+  var lo = Math.min.apply(null, all), hi = Math.max.apply(null, all);
+  var span = (hi - lo) || 1;
+  lo -= span * 0.07; hi += span * 0.07; span = hi - lo;
+
+  var Y = function (v) { return pt + ph * (1 - (v - lo) / span); };
+  var X = function (i) { return pl + pw * (i / (d.length - 1)); };
+
+  var s = "";
+  if (ev.levels) {
+    var ys = Y(ev.levels.stop), yt = Y(ev.levels.target);
+    s += '<rect x="' + pl + '" y="' + ys.toFixed(1) + '" width="' + pw + '" height="' +
+         Math.max(0, H - pb - ys).toFixed(1) + '" fill="#ff5c7c" opacity=".07"/>' +
+         '<line x1="' + pl + '" y1="' + ys.toFixed(1) + '" x2="' + (pl + pw) + '" y2="' +
+         ys.toFixed(1) + '" stroke="#ff5c7c" stroke-width="1" stroke-dasharray="4 3"/>' +
+         '<text x="' + (pl + pw + 5) + '" y="' + (ys + 3).toFixed(1) +
+         '" class="lbl" fill="#ff5c7c">stop ' + fmt(ev.levels.stop, 0) + '</text>';
+    s += '<rect x="' + pl + '" y="' + pt + '" width="' + pw + '" height="' +
+         Math.max(0, yt - pt).toFixed(1) + '" fill="#26d98a" opacity=".07"/>' +
+         '<line x1="' + pl + '" y1="' + yt.toFixed(1) + '" x2="' + (pl + pw) + '" y2="' +
+         yt.toFixed(1) + '" stroke="#26d98a" stroke-width="1" stroke-dasharray="4 3"/>' +
+         '<text x="' + (pl + pw + 5) + '" y="' + (yt + 3).toFixed(1) +
+         '" class="lbl" fill="#26d98a">target ' + fmt(ev.levels.target, 0) + '</text>';
+  }
+
+  var ye = Y(pos.price);
+  s += '<line x1="' + pl + '" y1="' + ye.toFixed(1) + '" x2="' + (pl + pw) + '" y2="' +
+       ye.toFixed(1) + '" stroke="#8a94a8" stroke-width="1"/>' +
+       '<text x="' + (pl + pw + 5) + '" y="' + (ye + 3).toFixed(1) + '" class="lbl">you ' +
+       fmt(pos.price, 0) + '</text>';
+
+  var ep = [];
+  for (var i = 0; i < e.length; i++) {
+    if (e[i] != null) ep.push(X(i).toFixed(1) + "," + Y(e[i]).toFixed(1));
+  }
+  if (ep.length > 1) {
+    s += '<polyline points="' + ep.join(" ") + '" fill="none" stroke="#3987e5" ' +
+         'stroke-width="1.5" stroke-dasharray="2 3" opacity=".85"/>';
+  }
+
+  var cp = [];
+  for (var j = 0; j < c.length; j++) cp.push(X(j).toFixed(1) + "," + Y(c[j]).toFixed(1));
+  var colour = c[c.length - 1] >= pos.price ? "#26d98a" : "#ff5c7c";
+  s += '<polyline points="' + cp.join(" ") + '" fill="none" stroke="' + colour +
+       '" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>';
+
+  var ei = indexOnOrAfter(d, pos.date);
+  if (ei >= 0) {
+    s += '<circle cx="' + X(ei).toFixed(1) + '" cy="' + ye.toFixed(1) +
+         '" r="4" fill="#141924" stroke="#8a94a8" stroke-width="2"/>';
+  }
+  if (ev.fired) {
+    var fi = indexOnOrAfter(d, ev.fired.at);
+    if (fi >= 0) {
+      s += '<line x1="' + X(fi).toFixed(1) + '" y1="' + pt + '" x2="' + X(fi).toFixed(1) +
+           '" y2="' + (H - pb) + '" stroke="#ffb84d" stroke-width="1.5"/>';
+    }
+  }
+
+  var slot = pw / Math.max(1, d.length - 1);
+  var hits = "";
+  for (var k = 0; k < d.length; k++) {
+    hits += '<rect class="hit" data-i="' + k + '" x="' + (X(k) - slot / 2).toFixed(1) +
+            '" y="' + pt + '" width="' + slot.toFixed(1) + '" height="' + ph + '" fill="transparent"/>';
+  }
+
+  return '<div class="readout" data-default="Touch the chart to read a date">' +
+         'Touch the chart to read a date</div>' +
+         '<svg viewBox="0 0 ' + W + ' ' + H + '" role="img" aria-label="' + esc(pos.symbol) +
+         ' with your entry, stop and target">' +
+         '<line x1="' + pl + '" y1="' + (H - pb) + '" x2="' + (pl + pw) + '" y2="' + (H - pb) +
+         '" stroke="#2f3a52" stroke-width="1"/>' + s +
+         '<g class="cursor" style="display:none">' +
+         '<line y1="' + pt + '" y2="' + (H - pb) + '" stroke="#8a94a8" stroke-width="1"/>' +
+         '<circle r="4" fill="#141924" stroke="#8a94a8" stroke-width="2"/></g>' + hits +
+         '<text x="' + pl + '" y="' + (H - 5) + '" class="lbl2">' + d[0] + '</text>' +
+         '<text x="' + (pl + pw) + '" y="' + (H - 5) + '" text-anchor="end" class="lbl2">' +
+         d[d.length - 1] + '</text></svg>' +
+         '<script type="application/json" class="pts">' +
+         JSON.stringify(d.map(function (dd, ii) {
+           return { d: dd, c: c[ii], r: (c[ii] / pos.price - 1) * 100 };
+         })) + '<\/script>';
+}
+
+/* ------------------------------------------------------------------ *
+ * Rendering
+ * ------------------------------------------------------------------ */
+function rulesTable(pos, ev) {
+  if (!ev.levels) return "";
+  var last = ev.lastClose, rows = [];
+
+  function dist(level, dir) {
+    var move = (level / last - 1) * 100;
+    var crossed = dir === "below" ? last <= level : last >= level;
+    return crossed
+      ? '<span class="met">already</span>'
+      : '<span class="tnum">' + (move > 0 ? "+" : "") + move.toFixed(1) + "%</span>";
+  }
+
+  rows.push(['<span class="dot stop"></span>Stop', fmt(ev.levels.stop),
+             dist(ev.levels.stop, "below"), "A fall of this much closes it at a loss."]);
+  rows.push(['<span class="dot target"></span>Target', fmt(ev.levels.target),
+             dist(ev.levels.target, "above"),
+             "A rise of this much closes it at a profit. Happened 21% of the time."]);
+  rows.push(['<span class="dot trend"></span>Trend break',
+             ev.ema != null ? fmt(ev.ema) : "moving",
+             ev.ema != null ? dist(ev.ema, "below") : "—",
+             "The close under the 50-day average. The most common ending, 40%."]);
+  rows.push(['<span class="dot time"></span>Time', MKT.strategy.max_holding_bars + " sessions",
+             '<span class="tnum">' + ev.held + " in</span>",
+             "Sessions, not calendar days — about 85 days."]);
+
+  return '<table class="rules"><tbody>' + rows.map(function (r) {
+    return "<tr><td>" + r[0] + '</td><td class="n tnum">' + r[1] + '</td><td class="n">' +
+           r[2] + '</td><td class="faint">' + r[3] + "</td></tr>";
+  }).join("") + "</tbody></table>";
+}
+
+function renderPositions() {
+  var list = loadPositions();
+  var host = document.getElementById("positions");
+
+  if (!list.length) {
+    host.innerHTML = '<div class="card"><p class="sub" style="margin:0">Nothing recorded yet. ' +
+      "Buy through Fintual, then record it below — the verdict needs to know what you own, and " +
+      "only this phone will.</p></div>";
+    return;
+  }
+
+  host.innerHTML = list.map(function (pos, idx) {
+    var ev = evaluate(pos);
+    var cls = ev.verdict === "HOLD" ? "hold" : ev.verdict === "SELL" ? "sell" : "unknown";
+    var pnl = ev.pnlPct != null && !isNaN(ev.pnlPct) ? ev.pnlPct : null;
+
+    return '<div class="card">' +
+      '<div class="phead"><h3>' + esc(pos.symbol) + "</h3>" +
+      (pnl != null ? '<span class="pnl ' + (pnl >= 0 ? "up" : "down") + '">' + pct(pnl) +
+       "</span>" : "") + "</div>" +
+      '<div class="sub">' + esc(MKT.instruments[pos.symbol] ? MKT.instruments[pos.symbol].name
+        : "") + " · since " + esc(pos.date) + "</div>" +
+      '<div class="verdict"><span class="badge ' + cls + '">' + ev.verdict + "</span>" +
+      '<span class="why">' + esc(ev.why || "") + "</span></div>" +
+      chart(pos, ev) +
+      '<div class="stats">' +
+        stat("You paid", fmt(pos.price)) +
+        stat("Shares", pos.shares.toFixed(6)) +
+        stat("Put in", fmt(pos.amount) + " " + pos.currency) +
+        stat("Worth now", ev.value != null ? fmt(ev.value) + " USD" : "n/a") +
+      "</div>" +
+      (pos.anchorDate
+        ? '<p class="sub">Levels from the ' + esc(pos.anchorDate) + " close (" +
+          fmt(pos.anchor) + "), which is the bar the strategy measured. They do not move with " +
+          "your fill &mdash; the stop is placed by volatility, not as a percentage below what " +
+          "you paid.</p>"
+        : "") +
+      rulesTable(pos, ev) +
+      (ev.verdict === "HOLD"
+        ? '<p class="sub">Doing nothing is the default. The backtest\'s median winner took 36 ' +
+          "sessions to reach its target; the median loser was out in 8.</p>"
+        : "") +
+      '<div class="actions"><button class="btn small danger" data-del="' + idx +
+      '">Remove</button></div></div>';
+  }).join("");
+
+  host.querySelectorAll("[data-del]").forEach(function (b) {
+    b.addEventListener("click", function () {
+      if (!confirm("Remove this position? It is only stored here.")) return;
+      var l = loadPositions(); l.splice(parseInt(b.dataset.del, 10), 1);
+      savePositions(l); renderPositions();
+    });
+  });
+  wireCharts(host);
+}
+
+function stat(k, v) {
+  return '<div class="stat"><div class="k">' + k + '</div><div class="v tnum">' + v + "</div></div>";
+}
+
+function wireCharts(host) {
+  host.querySelectorAll(".readout").forEach(function (out) {
+    var card = out.parentElement;
+    var raw = card.querySelector(".pts");
+    var svg = card.querySelector("svg");
+    if (!raw || !svg) return;
+    var pts; try { pts = JSON.parse(raw.textContent); } catch (e) { return; }
+    var cursor = svg.querySelector(".cursor");
+    var line = cursor.querySelector("line"), dot = cursor.querySelector("circle");
+    var price = svg.querySelector('polyline[stroke-width="2"]');
+    var coords = price ? price.getAttribute("points").split(" ") : [];
+
+    svg.querySelectorAll(".hit").forEach(function (hit) {
+      var i = parseInt(hit.dataset.i, 10);
+      function show() {
+        var p = pts[i]; if (!p) return;
+        out.textContent = p.d + "  ·  " + fmt(p.c) + "  ·  " + pct(p.r) + " vs your entry";
+        out.classList.toggle("up", p.r >= 0);
+        out.classList.toggle("down", p.r < 0);
+        var xy = (coords[i] || "").split(",");
+        if (xy.length === 2) {
+          line.setAttribute("x1", xy[0]); line.setAttribute("x2", xy[0]);
+          dot.setAttribute("cx", xy[0]); dot.setAttribute("cy", xy[1]);
+          cursor.style.display = "";
+        }
+      }
+      hit.addEventListener("pointerenter", show);
+      hit.addEventListener("pointerdown", show);
+    });
+    svg.addEventListener("pointerleave", function () {
+      cursor.style.display = "none";
+      out.textContent = out.dataset.default;
+      out.classList.remove("up", "down");
+    });
+  });
+}
+
+function renderMarket() {
+  var sig = [];
+  Object.keys(MKT.instruments).forEach(function (sym) {
+    var inst = MKT.instruments[sym];
+    if (inst.signal === "BUY" || inst.signal === "SELL") sig.push([sym, inst]);
+  });
+
+  document.getElementById("signals").innerHTML = sig.length
+    ? sig.map(function (p) {
+        return '<div class="sig"><span><b>' + esc(p[0]) + "</b> " +
+          '<span class="tag ' + (p[1].signal === "BUY" ? "buy" : "") + '">' + p[1].signal +
+          "</span></span><span class=\"tnum\">" + fmt(p[1].c[p[1].c.length - 1]) + "</span></div>";
+      }).join("") +
+      '<p class="sub" style="margin-top:12px">A BUY means the entry conditions hold on ' +
+      "historical data. It is not a probability of profit and not a forecast.</p>"
+    : '<p class="sub" style="margin:0">Nothing fired today. That is the normal case — the ' +
+      "2016–2021 backtest averaged about 13 entries a month across all 42 instruments.</p>";
+
+  document.getElementById("regions").innerHTML = MKT.regions.map(function (r) {
+    var shown = r.symbols.length, declared = r.declared;
+    var rows = r.symbols.map(function (s) {
+      var inst = MKT.instruments[s];
+      var c = inst.c, n = c.length - 1;
+      var back = Math.max(0, n - 20);
+      var ret = ((c[n] / c[back]) - 1) * 100;
+      return '<div class="sig"><span>' + esc(s) +
+        (inst.thin ? ' <span class="tag">thin</span>' : "") +
+        '</span><span class="tnum ' + (ret >= 0 ? "up" : "down") + '">' + pct(ret) + "</span></div>";
+    }).join("");
+    return '<div class="card"><h2 style="margin-top:0">' + esc(r.name) + "</h2>" +
+      '<p class="sub">' + (shown === declared ? shown : "<b>" + shown + " of " + declared + "</b>") +
+      " evaluated · benchmark " + esc(r.benchmark) + " · 20-session return</p>" + rows + "</div>";
+  }).join("");
+}
+
+function renderLearn() {
+  var r = MKT.exit_base_rates;
+  var rows = [
+    ["trend", "Trend break", "The close falls below the 50-day average.", r.trend_break, "−1.0%"],
+    ["stop", "Stop", "Price reaches the lower line, two ATR below the entry bar's close.",
+     r.stop_loss, "−3.7%"],
+    ["target", "Target", "Price reaches the upper line, three times the risk above.",
+     r.take_profit, "+10.3%"],
+    ["time", "Time", MKT.strategy.max_holding_bars + " trading sessions pass.", r.time, "+10.8%"]
+  ];
+  document.getElementById("exits-learn").innerHTML = rows.map(function (x) {
+    return '<tr><td><span class="dot ' + x[0] + '"></span><b>' + x[1] + "</b></td>" +
+      "<td>" + x[2] + '</td><td class="n tnum">' + (x[3] * 100).toFixed(1) + "%</td>" +
+      '<td class="n faint">median ' + x[4] + "</td></tr>";
+  }).join("");
+}
+
+/* ------------------------------------------------------------------ *
+ * Form
+ * ------------------------------------------------------------------ */
+function wireForm() {
+  var sel = document.getElementById("f-symbol");
+  var groups = {};
+  MKT.regions.forEach(function (r) { groups[r.name] = r.symbols; });
+  Object.keys(groups).forEach(function (region) {
+    var g = document.createElement("optgroup");
+    g.label = region;
+    groups[region].forEach(function (s) {
+      var o = document.createElement("option");
+      o.value = s;
+      o.textContent = s + " — " + MKT.instruments[s].name;
+      g.appendChild(o);
+    });
+    sel.appendChild(g);
+  });
+
+  document.getElementById("f-date").value = MKT.as_of || new Date().toISOString().slice(0, 10);
+
+  document.getElementById("f-save").addEventListener("click", function () {
+    var err = document.getElementById("f-error");
+    err.classList.add("hidden");
+
+    var symbol = sel.value;
+    var amount = parseFloat(document.getElementById("f-amount").value);
+    var price = parseFloat(document.getElementById("f-price").value);
+    var currency = document.getElementById("f-currency").value;
+    var when = document.getElementById("f-date").value;
+    var fees = parseFloat(document.getElementById("f-fees").value) || 0;
+
+    function fail(msg) { err.textContent = msg; err.classList.remove("hidden"); }
+
+    if (!symbol) return fail("Pick an instrument.");
+    if (!(amount > 0)) return fail("How much did you spend?");
+    if (!(price > 0)) return fail("What price per share did Fintual show? Without it the share count cannot be worked out.");
+    if (!when) return fail("Pick a date.");
+    if (loadPositions().some(function (p) { return p.symbol === symbol; })) {
+      return fail("You already have an open " + symbol + ". Remove it first — there is no " +
+                  "lot-level accounting here, so two would make every figure for it wrong.");
+    }
+
+    // CLP is converted only if a rate is available; otherwise the amount is kept as entered and
+    // the share count comes from price alone, which is the honest fallback.
+    var amountUsd = amount;
+    if (currency === "CLP") {
+      var rate = MKT.fx && MKT.fx.CLP;
+      if (!rate) return fail("No exchange rate is available in this data. Enter the amount in USD.");
+      amountUsd = amount / rate;
+    }
+
+    // Derived once, here, and stored. Re-deriving on every load would let the stop move as
+    // new bars arrive, and a stop that moves on its own is not a stop.
+    var lv = levelsFor(MKT.instruments[symbol], when);
+    if (!lv) {
+      return fail("Not enough stored history for " + symbol + " to place a stop and a target. " +
+                  "Nothing is recorded, because a position with no stop is one nothing is " +
+                  "watching.");
+    }
+
+    var list = loadPositions();
+    list.push({
+      symbol: symbol, amount: amount, currency: currency, price: price,
+      shares: amountUsd / price, date: when, fees: fees,
+      stop: lv.stop, target: lv.target, anchor: lv.anchor, anchorDate: lv.anchorDate,
+      recorded: new Date().toISOString()
+    });
+    savePositions(list);
+
+    document.getElementById("f-amount").value = "";
+    document.getElementById("f-price").value = "";
+    renderPositions();
+    document.querySelector('[data-view="positions"]').click();
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  });
+
+  document.getElementById("f-export").addEventListener("click", function () {
+    var blob = new Blob([JSON.stringify(loadPositions(), null, 1)], { type: "application/json" });
+    var a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = "quant-trader-positions.json";
+    a.click();
+  });
+
+  var file = document.getElementById("f-file");
+  document.getElementById("f-import").addEventListener("click", function () { file.click(); });
+  file.addEventListener("change", function () {
+    var f = file.files[0]; if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      try {
+        var incoming = JSON.parse(r.result);
+        if (!Array.isArray(incoming)) throw new Error("not a list");
+        savePositions(incoming);
+        renderPositions();
+      } catch (e) { alert("That file could not be read as positions."); }
+    };
+    r.readAsText(f);
+  });
+
+  document.getElementById("f-clear").addEventListener("click", function () {
+    if (!confirm("Delete every position stored here? There is no other copy unless you exported one.")) return;
+    savePositions([]); renderPositions();
+  });
+}
+
+/* ------------------------------------------------------------------ *
+ * Boot
+ * ------------------------------------------------------------------ */
+document.querySelectorAll(".tab").forEach(function (tab) {
+  tab.addEventListener("click", function () {
+    document.querySelectorAll(".tab").forEach(function (t) {
+      t.setAttribute("aria-selected", String(t === tab));
+    });
+    ["positions", "market", "learn"].forEach(function (v) {
+      document.getElementById("view-" + v).classList.toggle("hidden", v !== tab.dataset.view);
+    });
+  });
+});
+
+fetch("market.json?v=" + Date.now())
+  .then(function (r) {
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    return r.json();
+  })
+  .then(function (data) {
+    if (data.version !== 1) {
+      throw new Error("This page expects data version 1 and got " + data.version +
+                      ". Reload — a cached copy is being read.");
+    }
+    MKT = data;
+    document.getElementById("boot").classList.add("hidden");
+    document.getElementById("app").classList.remove("hidden");
+
+    var age = MKT.as_of
+      ? Math.round((Date.now() - Date.parse(MKT.as_of)) / 86400000) : null;
+    document.getElementById("asof").innerHTML = MKT.as_of
+      ? "Prices through <b>" + MKT.as_of + "</b>" +
+        (age != null && age > 4
+          ? ' · <span style="color:var(--warn)">' + age + " days old</span>"
+          : "")
+      : "No price data";
+    document.getElementById("stamp").textContent =
+      Object.keys(MKT.instruments).length + " instruments";
+
+    wireForm();
+    renderPositions();
+    renderMarket();
+    renderLearn();
+  })
+  .catch(function (e) {
+    document.getElementById("boot").innerHTML =
+      '<p style="margin:0">Could not load market data.</p><p class="sub">' + esc(e.message) +
+      "</p><p class=\"sub\">If this persists, the scheduled job that publishes it may have " +
+      "failed. Your positions are untouched — they are stored in this browser.</p>";
+  });
+</script>
+</body>
+</html>

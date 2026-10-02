@@ -72,7 +72,7 @@ what turned out not to.
 | Event-driven backtester: costs, slippage, stops, targets, trailing, sizing | Done |
 | Full metric set, benchmark comparison, standalone HTML reports | Done |
 | Train/validation/test split guard (TEST refused unless finalising) | Done |
-| 913 tests, including look-ahead, leakage and stale-quote detection | Done |
+| 923 tests, including look-ahead, leakage and stale-quote detection | Done |
 | Dark-mode dashboard: overview, scanner, backtest, asset and data pages | Done |
 | Validated colour palette (CVD-checked) and a table view on every chart | Done |
 | API contract tests covering every field the dashboard reads | Done |
@@ -320,7 +320,8 @@ Vite proxies `/api/*` to the backend, so no URL configuration is needed.
 | `python -m app holdings` | Positions you have recorded, marked at the latest close |
 | `python -m app watch` | Check every open position's exit rule and alert on what fired |
 | `python -m app alerts` | Every notification attempted, and whether it was delivered |
-| `python -m app digest --send` | Build the digest and send it to Telegram |
+| `python -m app app` | Build the static web app: a page plus its market data |
+| `python -m app digest` | Self-contained HTML digest with charts, for one-off reading |
 | `python -m app positions-export` | Write holdings to `data/positions.json` so they survive |
 | `python -m app positions-import` | Restore holdings from that file. Idempotent |
 | `python -m app prune-data` | Delete stored bars for instruments no longer in the universe |

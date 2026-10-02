@@ -59,6 +59,15 @@ data/cache/
 data/raw/
 !data/.gitkeep
 
+# Your positions. Committed while the repository was private, which was the whole premise:
+# a few hundred bytes of JSON that survive an Actions cache eviction. That premise died the
+# moment the repository went public -- entry prices, sizes and stop levels are exactly what
+# should not be world-readable.
+#
+# Removing it from HEAD does not remove it from history. Rewriting history is a separate,
+# destructive act the owner has to choose.
+data/positions.json
+
 # ---- Generated reports ----
 reports/*
 !reports/.gitkeep
@@ -94,3 +103,4 @@ pnpm-debug.log*
 .DS_Store
 Thumbs.db
 desktop.ini
+site/
