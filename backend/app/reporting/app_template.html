@@ -166,6 +166,13 @@ footer{margin-top:34px;padding-top:14px;border-top:1px solid var(--line);
   font-variant-numeric:tabular-nums}
 .rets td:first-child{text-align:left;color:var(--dim)}
 .chev{color:var(--faint);font-size:17px;line-height:1}
+.fresh{display:flex;align-items:center;gap:6px;flex-wrap:wrap;font-size:12px}
+.fresh .led{width:8px;height:8px;border-radius:50%;flex:0 0 8px}
+.fresh .led.ok{background:var(--pos)}
+.fresh .led.late{background:var(--warn)}
+.fresh .led.bad{background:var(--neg)}
+.fresh b{color:var(--text);font-weight:600}
+.fresh .note2{color:var(--faint);font-size:11px;width:100%;margin-top:1px}
 .lnk{background:none;border:0;padding:0;color:var(--accent);font:inherit;cursor:pointer;
   text-decoration:underline;text-underline-offset:2px}
 /* ---- the risk dial ---- */
@@ -583,6 +590,52 @@ function liquidityNote(inst) {
     "forma que ninguna cifra de aqui captura.";
 }
 
+/* Today where the reader is, not in UTC: around midnight in Chile those differ by a day and
+   the page would claim the data is a session older than it is. */
+function todayISO() {
+  var d = new Date();
+  return new Date(d.getTime() - d.getTimezoneOffset() * 60000).toISOString().slice(0, 10);
+}
+
+/* Weekdays strictly after `from`, up to and including `to`. US market holidays are not in the
+   payload, and a holiday list written into this page would go stale without anyone noticing,
+   so this over-counts around them and the page says so instead of pretending otherwise. */
+function sessionsSince(from, to) {
+  if (!from || !to || from >= to) return 0;
+  var cur = new Date(from + "T00:00:00Z"), end = new Date(to + "T00:00:00Z"), n = 0;
+  while (cur < end && n < 400) {
+    cur.setUTCDate(cur.getUTCDate() + 1);
+    var day = cur.getUTCDay();
+    if (day !== 0 && day !== 6) n++;
+  }
+  return n;
+}
+
+function lastBarOf(inst) {
+  return inst.d && inst.d.length ? inst.d[inst.d.length - 1] : null;
+}
+
+/* Instruments whose newest bar is older than the newest bar in the file. These are the ones
+   `as_of` hides: it is a maximum, so one fresh symbol makes the whole page look current. */
+function behindOthers() {
+  var out = [];
+  Object.keys(MKT.instruments).forEach(function (s) {
+    var last = lastBarOf(MKT.instruments[s]);
+    if (last && MKT.as_of && last < MKT.as_of) out.push(s);
+  });
+  return out.sort();
+}
+
+var MONTHS_ES = ["ene", "feb", "mar", "abr", "may", "jun",
+                 "jul", "ago", "sep", "oct", "nov", "dic"];
+var DAYS_ES = ["domingo", "lunes", "martes", "miércoles", "jueves", "viernes", "sábado"];
+
+function longDate(iso) {
+  if (!iso) return "sin fecha";
+  var d = new Date(iso + "T00:00:00Z");
+  return DAYS_ES[d.getUTCDay()] + " " + d.getUTCDate() + " " + MONTHS_ES[d.getUTCMonth()];
+}
+
 function esc(s) {
   return String(s).replace(/[&<>"]/g, function (c) {
     return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
@@ -835,6 +888,48 @@ function evidenceTable(split) {
     "</tr></thead><tbody>" + rows + "</tbody></table>";
 }
 
+function renderFreshness() {
+  var host = document.getElementById("asof");
+  if (!MKT.as_of) {
+    host.innerHTML = '<span class="fresh"><span class="led bad"></span>' +
+      "Sin datos de precio</span>";
+    return;
+  }
+
+  // One session behind is the normal state: the page is rebuilt after the US close, so
+  // today's bar does not exist until the evening, and on a Monday the newest close that can
+  // exist is Friday's. Flagging that would be crying wolf every morning.
+  var missed = sessionsSince(MKT.as_of, todayISO());
+  var level = missed <= 1 ? "ok" : missed <= 2 ? "late" : "bad";
+  var verdict = missed <= 1
+    ? "al día"
+    : missed === 2 ? "podría estar atrasado" : "atrasado";
+
+  var behind = behindOthers();
+  var parts =
+    '<span class="fresh"><span class="led ' + level + '"></span>' +
+    "<span>Último cierre: <b>" + esc(longDate(MKT.as_of)) + "</b> (" + esc(MKT.as_of) +
+    ") · " + verdict + "</span>";
+
+  var note = "Página generada el " + esc(MKT.generated_at) +
+    ". Se rehace cada día hábil después del cierre de EE.UU.";
+  if (missed > 1) {
+    note += " Han pasado " + missed + " días hábiles desde ese cierre" +
+      (MKT.generated_at === MKT.as_of
+        ? ", y la página tampoco se ha vuelto a generar: probablemente falló el proceso " +
+          "programado."
+        : ", pero la página sí se generó después: el problema está en los datos, no en el " +
+          "proceso.") +
+      " No se descuentan feriados de EE.UU.";
+  }
+  if (behind.length) {
+    note += " " + behind.length + (behind.length === 1 ? " instrumento va" : " instrumentos van") +
+      " un paso atrás del resto: " + behind.map(esc).join(", ") + ".";
+  }
+
+  host.innerHTML = parts + '<span class="note2">' + note + "</span></span>";
+}
+
 function renderRisk() {
   if (!MKT.profiles || !MKT.profiles.length) return;
   var current = profileName();
@@ -1049,7 +1144,9 @@ function marketRow(symbol) {
   return '<button class="row2" data-sym="' + symbol + '">' +
     '<span><span class="sym">' + esc(symbol) + "</span>" + pill +
     '<span class="meta">' + esc(why) + " · " + esc(inst.name) +
-    (inst.thin ? " · poco líquido" : "") + "</span></span>" +
+    (inst.thin ? " · poco líquido" : "") +
+    (lastBarOf(inst) < MKT.as_of ? " · datos al " + esc(lastBarOf(inst)) : "") +
+    "</span></span>" +
     '<span class="' + (r["1m"] >= 0 ? "up" : "down") + ' tnum" ' +
       'style="text-align:right">' + pct(r["1m"]) + "</span>" +
     '<span class="chev">\u203a</span></button>';
@@ -1227,7 +1324,11 @@ function showDetail(symbol) {
       trade + "</div>" +
 
     '<div class="card"><h2 style="margin-top:0">Vale la pena saber</h2>' +
-      '<table class="rets"><tbody><tr><td>Monto transado al día</td><td>' +
+      '<table class="rets"><tbody><tr><td>Último cierre con datos</td><td>' +
+      esc(lastBarOf(inst) || "n/a") +
+      (lastBarOf(inst) < MKT.as_of
+        ? ' <span style="color:var(--warn)">(un paso atrás)</span>' : "") +
+      '</td></tr><tr><td>Monto transado al día</td><td>' +
       (inst.turnover ? big(inst.turnover) + " USD" : "n/a") +
       "</td></tr><tr><td>RSI</td><td>" + fmt(inst.rsi, 1) +
       "</td></tr><tr><td>Volatilidad (ATR)</td><td>" + fmt(inst.atr_pct, 2) +
@@ -1467,14 +1568,7 @@ fetch("market.json?v=" + Date.now())
     document.getElementById("boot").classList.add("hidden");
     document.getElementById("app").classList.remove("hidden");
 
-    var age = MKT.as_of
-      ? Math.round((Date.now() - Date.parse(MKT.as_of)) / 86400000) : null;
-    document.getElementById("asof").innerHTML = MKT.as_of
-      ? "Precios hasta el <b>" + MKT.as_of + "</b>" +
-        (age != null && age > 4
-          ? ' · <span style="color:var(--warn)">' + age + " días de antigüedad</span>"
-          : "")
-      : "Sin datos de precio";
+    renderFreshness();
     document.getElementById("stamp").textContent =
       Object.keys(MKT.instruments).length + " instrumentos";
 

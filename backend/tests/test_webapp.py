@@ -458,3 +458,68 @@ console.log(JSON.stringify({
             "Worth now",
         ):
             assert phrase not in html, f"{phrase!r} is still in the page"
+
+
+@pytest.mark.skipif(NODE is None, reason="node is not installed")
+class TestDataFreshness:
+    """How old the data is, and which instruments are older than the rest."""
+
+    _run = TestBrowserArithmeticMatchesPython._run
+
+    def test_sessions_are_counted_as_weekdays(self, built) -> None:
+        """A Monday reading Friday's close is current, not three days stale.
+
+        Counting calendar days made the page cry wolf every Monday, which is the fastest way
+        to teach someone to ignore a staleness warning.
+        """
+        got = self._run(
+            built,
+            """
+console.log(JSON.stringify({
+  friToMon: sessionsSince("2026-10-02", "2026-10-05"),  // one weekday: Monday
+  friToTue: sessionsSince("2026-10-02", "2026-10-06"),  // two
+  sameDay:  sessionsSince("2026-10-05", "2026-10-05"),
+  backwards: sessionsSince("2026-10-05", "2026-10-02"), // never negative
+  aWeek:    sessionsSince("2026-09-25", "2026-10-05")
+}));
+""",
+        )
+        assert got == {"friToMon": 1, "friToTue": 2, "sameDay": 0,
+                       "backwards": 0, "aWeek": 6}
+
+    def test_an_instrument_behind_the_others_is_named(self, built) -> None:
+        """`as_of` is a maximum, so one fresh symbol makes the whole file look current.
+
+        On 2026-10-02 the published payload said 2026-10-02 while CCU, HDB and IBN only had
+        bars through 2026-10-01, and nothing on the page mentioned it.
+        """
+        got = self._run(
+            built,
+            """
+const sym = Object.keys(MKT.instruments)[0];
+const inst = MKT.instruments[sym];
+// Drop the newest bar from one instrument and check it gets named.
+["d", "h", "l", "c", "e", "a"].forEach(function (k) { inst[k] = inst[k].slice(0, -1); });
+console.log(JSON.stringify({dropped: sym, behind: behindOthers(),
+                            lastBar: lastBarOf(inst), asOf: MKT.as_of}));
+""",
+        )
+        assert got["behind"] == [got["dropped"]]
+        assert got["lastBar"] < got["asOf"]
+
+    def test_the_header_states_the_date_and_the_verdict(self, built) -> None:
+        got = self._run(
+            built,
+            """
+// A real DOM is not available here; capture what renderFreshness would write.
+const host = {innerHTML: ""};
+document.getElementById = function () { return host; };
+renderFreshness();
+console.log(JSON.stringify({html: host.innerHTML, asOf: MKT.as_of}));
+""",
+        )
+        assert got["asOf"] in got["html"], "the data date is not in the header"
+        # ASCII fragments on purpose: the surrounding words carry accents, and an assertion
+        # that depends on this file's encoding surviving every editor is a flaky test.
+        assert "cierre:" in got["html"]
+        assert "generada el" in got["html"]
